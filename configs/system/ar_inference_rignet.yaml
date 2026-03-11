@@ -1,14 +1,14 @@
 __target__: ar
 val_interval: 1
 generate_kwargs:
-  max_new_tokens: 2048
+  max_new_tokens: 1022
   num_return_sequences: 1
   num_beams: 5
   do_sample: True
   top_k: 5
   top_p: 0.95
   repetition_penalty: 3.0
-  temperature: 1.5 # must be a float
+  temperature: 1.5
   no_cls: False
-  assign_cls: articulationxl
+  assign_cls: rignet
   use_dir_cls: False

@@ -1,0 +1,5 @@
+# Blender runtime deps isolated from the ML stack so bpy can be built and
+# smoke-tested independently. Pin numpy to match requirements-base so the
+# merged runtime has a single consistent numpy.
+numpy==1.26.4
+bpy==4.2

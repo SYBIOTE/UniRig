@@ -1,0 +1,12 @@
+# Common bone names that UniRig reliably outputs in order.
+# Only the root-to-head spine chain is predictable by index;
+# limbs, hands, and fingers are assigned downstream via topology matching.
+parts_order: [body]
+
+parts:
+  body: [
+    hips,
+    spine,
+    spine001,
+    spine002,
+  ]

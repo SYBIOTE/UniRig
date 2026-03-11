@@ -388,6 +388,7 @@ def extract_builtin(
     time: str,
     files: List[Union[str, str]],
 ):
+    print(f">>> [extract_builtin] Running extract with output_folder: {output_folder}, target_count: {target_count}, num_runs: {num_runs}, id: {id}, time: {time}, files: {files}")
     log_path = "./logs"
     log_path = os.path.join(log_path, time)
 
@@ -492,9 +493,10 @@ def get_files(
         vis = {}
         inputs = inputs.split(',')
         for file in inputs:
-            file_name = file.removeprefix("./")
-            # remove suffix
-            file_name = '.'.join(file_name.split('.')[:-1])
+            file_stripped = file.removeprefix("./").strip()
+            # use basename for output_dir to handle absolute paths correctly
+            base = os.path.basename(file_stripped)
+            file_name = '.'.join(base.split('.')[:-1]) if '.' in base else base
             output_dir = os.path.join(output_dataset_dir, file_name)
             raw_data_npz = os.path.join(output_dir, data_name)
             if not force_override and os.path.exists(raw_data_npz):
@@ -577,3 +579,7 @@ if __name__ == "__main__":
         time=timestamp,
         files=files,
     )
+
+    # Skip normal Python/bpy teardown to avoid a known segfault in bpy's
+    # native module destructors during interpreter shutdown.
+    os._exit(0)

@@ -1,0 +1,5 @@
+# Heavy / rarely-changing deps — cached as their own Docker layer
+# Pin 2.4.1 to match torch_scatter/torch_cluster wheels from PyG (torch-2.4.1+cu124)
+--index-url https://download.pytorch.org/whl/cu124
+torch==2.4.1
+torchvision>=0.18.1

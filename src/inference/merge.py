@@ -459,7 +459,7 @@ if __name__ == "__main__":
     if args.source is not None or args.target is not None:
         assert args.source is not None and args.target is not None
         transfer(args.source, args.target, args.output, args.add_root)
-        exit()
+        os._exit(0)
 
     data_config     = Box(yaml.safe_load(open(args.data_config, "r")))
     skeleton_config = Box(yaml.safe_load(open(args.skeleton_config, "r")))
@@ -548,3 +548,5 @@ if __name__ == "__main__":
             )
         except Exception as e:
             print(f"failed to merge {origin_file}: {e}")
+
+    os._exit(0)

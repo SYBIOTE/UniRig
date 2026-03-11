@@ -1,0 +1,129 @@
+# UniRig shared base image (multi-stage)
+# Stage 1 (blender-base): isolated bpy/Blender runtime + smoke test.
+# Stage 2 (ml-builder): CUDA devel — torch, flash_attn, and ML deps.
+# Stage 3 (runtime): build the full serving base on top of blender-base.
+#
+# Build (requires BuildKit for cache mounts; use DOCKER_BUILDKIT=1 or docker buildx):
+#   DOCKER_BUILDKIT=1 docker build -f Dockerfile.base --target blender-base -t unirig-blender-base .
+#   DOCKER_BUILDKIT=1 docker build -f Dockerfile.base -t unirig-base .
+#
+# Cloud Build (see cloudbuild.yaml):
+#   Built automatically as the first step; the API image uses it via FROM.
+
+ARG CUDA_VERSION=12.4.1
+
+# ════════════════════════════════════════════════════════════════════
+# Stage 1: blender-base — isolate bpy and verify it works
+# ════════════════════════════════════════════════════════════════════
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu22.04 AS blender-base
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 python3.11-venv python3-pip curl \
+    libegl1 libgbm1 libdrm2 libgl1-mesa-dri libgl1-mesa-glx \
+    libglvnd0 libopengl0 libglib2.0-0 libsm6 libxext6 libxrender1 \
+    libxxf86vm1 libxfixes3 libxi6 libxkbcommon0 libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+RUN pip install uv
+
+WORKDIR /app
+
+# Install bpy independently so Blender issues can be debugged without the ML
+# stack muddying the signal.
+COPY requirements-blender.txt ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system -r requirements-blender.txt
+
+# Ensure bpy can load before the heavier ML image build starts.
+RUN python -c "import bpy; print(f'bpy OK: {bpy.app.version_string}')"
+
+COPY blender/ blender/
+
+# Install the VRM addon in the isolated Blender layer so failures are clearly
+# attributable to Blender setup rather than the application runtime.
+RUN python -c "\
+import bpy, os; \
+bpy.ops.preferences.addon_install(filepath=os.path.abspath('blender/add-on-vrm-v2.20.77_modified.zip')); \
+print('VRM addon install OK') \
+" || echo '>>> [WARNING] VRM addon install failed — .vrm support disabled (obj/fbx/glb/gltf/dae still work)'
+
+# Ensure PyTorch native libs (libc10, etc.) are visible to flash_attn and other
+# native extensions. Include system lib dirs so bpy/Blender can resolve GL/EGL.
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.11/dist-packages/torch/lib:/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}
+
+# Blender headless imports still touch graphics stacks. Expose the full driver
+# capability set when the container runs with NVIDIA Container Toolkit.
+ENV NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility
+
+# ════════════════════════════════════════════════════════════════════
+# Stage 2: ml-builder — compile flash_attn (needs nvcc / CUDA headers)
+# ════════════════════════════════════════════════════════════════════
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS ml-builder
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    MAX_JOBS=4
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 python3.11-venv python3.11-dev python3-pip curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+RUN pip install uv
+
+WORKDIR /build
+
+# Layer 1: PyTorch (rarely changes — separate COPY for better cache hits)
+COPY requirements-torch.txt ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system -r requirements-torch.txt
+
+# Layer 2: flash_attn from source (needs torch + nvcc; ninja speeds up compilation)
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system packaging setuptools ninja && \
+    uv pip install --system --no-binary flash-attn "flash_attn>=2.5.8,<2.8" --no-build-isolation && \
+    python -c "import torch; from flash_attn.modules.mha import MHA; print('flash_attn OK')"
+
+# Layer 3: remaining ML deps + PyG extensions
+COPY requirements-base.txt ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system -r requirements-base.txt \
+    && uv pip install --system \
+       torch_scatter torch_cluster \
+       -f https://data.pyg.org/whl/torch-2.4.1+cu124.html
+
+# ════════════════════════════════════════════════════════════════════
+# Stage 3: runtime — full serving base built on top of blender-base
+# ════════════════════════════════════════════════════════════════════
+FROM blender-base AS runtime
+
+# Copy only the ML packages on top of the isolated Blender runtime.
+COPY --from=ml-builder /usr/local/lib/python3.11/dist-packages /usr/local/lib/python3.11/dist-packages
+
+# ── Layer 4: Checkpoint directory (mount volume at runtime) ──
+# Checkpoints are NOT baked in. Mount via: -v ./ckpts:/app/experiments
+# See DEPLOY.md for download instructions.
+RUN mkdir -p /app/experiments
+
+# ── Layer 5: App code ──
+COPY src/ src/
+COPY configs/ configs/
+COPY launch/ launch/
+COPY run.py .
+COPY runtime.py .
+
+# Pre-cache transformers config for facebook/opt-350m (used by AR model) so startup works offline
+RUN python -c "from transformers import AutoConfig; AutoConfig.from_pretrained('facebook/opt-350m'); print('opt-350m config cached')"
+
+ENV PORT=8080

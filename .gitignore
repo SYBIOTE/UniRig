@@ -18,6 +18,10 @@ lightning_logs/
 
 # ignore experiments
 experiments/
+
+# Pre-downloaded checkpoints (see ckpts/README.md) — keep README, ignore model files
+ckpts/*
+!ckpts/README.md
 results/
 dataset_clean/
 logs/
@@ -36,6 +40,7 @@ build/
 # Virtual environments
 venv/
 env/
+.env
 .env/
 .venv/
 

@@ -49,8 +49,7 @@ class UniRigAR(ModelSpec):
         _d = llm.copy()
         _d['vocab_size'] = self.tokenizer.vocab_size
         llm_config = AutoConfig.from_pretrained(**_d)
-        # Force float32 precision for the model
-        llm_config.torch_dtype = torch.float32
+        llm_config.torch_dtype = torch.bfloat16
         # Force enable pre_norm
         llm_config.pre_norm = True
         self.transformer = AutoModelForCausalLM.from_config(config=llm_config)

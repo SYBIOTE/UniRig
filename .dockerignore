@@ -1,0 +1,14 @@
+.git
+__pycache__
+*.pyc
+*.egg-info
+wandb/
+outputs/
+logs/
+.venv
+.env
+.env.*
+ckpts/.cache
+*.ckpt
+!ckpts/
+!ckpts/**

@@ -66,6 +66,8 @@ class Order():
         Get names for specified cls.
         '''
         names = []
+        if cls is not None and cls in self.parts_order and (not parts or all(p is None for p in parts)):
+            parts = self.parts_order[cls]
         for part in parts:
             if part is None: # spring
                 continue

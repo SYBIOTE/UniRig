@@ -11,4 +11,5 @@ order_config:
   skeleton_path:
     vroid: ./configs/skeleton/vroid.yaml
     mixamo: ./configs/skeleton/mixamo.yaml
+    rignet: ./configs/skeleton/common.yaml
   

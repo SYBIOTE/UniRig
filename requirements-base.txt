@@ -1,0 +1,18 @@
+# Shared ML deps for inference (no wandb — not needed at serving time)
+# flash_attn is compiled from source in the builder stage of Dockerfile.base
+huggingface_hub
+transformers==4.51.3
+python-box
+einops
+omegaconf
+pytorch_lightning
+lightning
+addict
+timm
+fast-simplification
+trimesh
+open3d
+pyrender
+numpy==1.26.4
+psutil
+spconv-cu124
