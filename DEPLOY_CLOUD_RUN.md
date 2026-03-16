@@ -130,6 +130,7 @@ gcloud run deploy $SERVICE_NAME \
 Notes:
 
 - **Volume:** `ckpts` = GCS bucket mounted read-only at `/app/experiments` (where UniRig looks for checkpoints).
+- **Startup optimization:** UniRig copies checkpoints from GCS to `/tmp` at startup, then loads from local disk (~10x faster than FUSE). Models load in parallel. Set `UNIRIG_CACHE_CKPTS=0` to disable (e.g. local dev with bind mount).
 - **Memory:** 4 vCPU allows up to 16Gi; if you hit OOM, use `--cpu=8` and `--memory=32Gi`.
 - **Startup:** Probe waits up to 4 minutes for the app to listen on 8080. If startup is still too slow, consider lazy-loading models (load on first request instead of in lifespan).
 

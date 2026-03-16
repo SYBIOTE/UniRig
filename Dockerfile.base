@@ -64,7 +64,7 @@ ENV LD_LIBRARY_PATH=/usr/local/lib/python3.11/dist-packages/torch/lib:/usr/lib/x
 ENV NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility
 
 # ════════════════════════════════════════════════════════════════════
-# Stage 2: ml-builder — compile flash_attn (needs nvcc / CUDA headers)
+# Stage 2: ml-builder — torch, flash_attn (prebuilt wheel), and ML deps
 # ════════════════════════════════════════════════════════════════════
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS ml-builder
 
@@ -89,11 +89,11 @@ COPY requirements-torch.txt ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system -r requirements-torch.txt
 
-# Layer 2: flash_attn from source (needs torch + nvcc; ninja speeds up compilation)
+# Layer 2: flash_attn from prebuilt wheel (avoids 30+ min compile; Cloud Build OOM/internal errors)
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system packaging setuptools ninja && \
-    uv pip install --system --no-binary flash-attn "flash_attn>=2.5.8,<2.8" --no-build-isolation && \
-    python -c "import torch; from flash_attn.modules.mha import MHA; print('flash_attn OK')"
+    uv pip install --system \
+    https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.4cxx11abiFALSE-cp311-cp311-linux_x86_64.whl \
+    && python -c "import torch; from flash_attn.modules.mha import MHA; print('flash_attn OK')"
 
 # Layer 3: remaining ML deps + PyG extensions
 COPY requirements-base.txt ./

@@ -8,8 +8,10 @@ subprocess since bpy has global state that conflicts with long-lived processes.
 """
 
 import os
+import shutil
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Union
 
 import numpy as np
@@ -45,6 +47,33 @@ def _preflight(app_dir: str) -> None:
             f"Required native extensions failed to load: {e}. "
             "Ensure LD_LIBRARY_PATH includes PyTorch lib dir."
         ) from e
+
+
+def _copy_checkpoints_to_local(app_dir: str) -> str:
+    """Copy checkpoints from GCS mount to /tmp for faster torch.load.
+    GCS FUSE reads are ~10x slower than local disk; copying first then loading
+    from /tmp significantly reduces Cloud Run cold-start time.
+    Set UNIRIG_CACHE_CKPTS=1 to enable (default on Cloud Run)."""
+    if os.environ.get("UNIRIG_CACHE_CKPTS", "1") != "1":
+        return app_dir
+    cache_dir = "/tmp/unirig_ckpts"
+    os.makedirs(cache_dir, exist_ok=True)
+
+    def _copy_one(ckpt_name: str) -> None:
+        src = os.path.join(app_dir, ckpt_name)
+        dst = os.path.join(cache_dir, ckpt_name)
+        dst_dir = os.path.dirname(dst)
+        os.makedirs(dst_dir, exist_ok=True)
+        print(f">>> [runtime] Copying {ckpt_name} to local cache...")
+        shutil.copy2(src, dst)
+        print(f">>> [runtime] Cached {ckpt_name}")
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        ex.map(_copy_one, REQUIRED_FOR_API)
+
+    return cache_dir
+
+
 from src.data.dataset import UniRigDatasetModule, DatasetConfig
 from src.data.datapath import Datapath
 from src.data.transform import TransformConfig
@@ -66,8 +95,9 @@ def _load_config(task: str, path: str) -> Box:
     return Box(yaml.safe_load(open(path, "r")))
 
 
-def _load_skeleton_pipeline(app_dir: str, task_path: str) -> dict:
+def _load_skeleton_pipeline(app_dir: str, task_path: str, ckpt_base_dir: str | None = None) -> dict:
     """Load a skeleton (AR) pipeline from a task config. Returns dict with system, task, configs, etc."""
+    ckpt_base = ckpt_base_dir or app_dir
     skel_task = _load_config("task", os.path.join(app_dir, task_path))
     skel_data_config = _load_config("data", os.path.join(app_dir, "configs/data", skel_task.components.data))
     skel_transform_config = _load_config("transform", os.path.join(app_dir, "configs/transform", skel_task.components.transform))
@@ -89,7 +119,7 @@ def _load_skeleton_pipeline(app_dir: str, task_path: str) -> dict:
         steps_per_epoch=1,
     )
 
-    skel_ckpt = download(skel_task.resume_from_checkpoint, base_dir=app_dir)
+    skel_ckpt = download(skel_task.resume_from_checkpoint, base_dir=ckpt_base)
     ckpt = torch.load(skel_ckpt, map_location="cpu")
     skel_system.load_state_dict(ckpt["state_dict"])
     del ckpt
@@ -103,6 +133,43 @@ def _load_skeleton_pipeline(app_dir: str, task_path: str) -> dict:
         "process_fn": skel_model._process_fn,
         "data_name": skel_task.components.get("data_name", "raw_data.npz"),
         "writer_config": dict(skel_task.writer),
+    }
+
+
+def _load_skin_pipeline(app_dir: str, ckpt_base_dir: str | None = None) -> dict:
+    """Load the skin pipeline. Returns dict with system, configs, etc."""
+    ckpt_base = ckpt_base_dir or app_dir
+    skin_task = _load_config("task", os.path.join(app_dir, SKIN_TASK))
+    skin_data_config = _load_config("data", os.path.join(app_dir, "configs/data", skin_task.components.data))
+    skin_transform_config = _load_config("transform", os.path.join(app_dir, "configs/transform", skin_task.components.transform))
+
+    skin_model_config = _load_config("model", os.path.join(app_dir, "configs/model", skin_task.components.model))
+    skin_model = get_model(**skin_model_config)
+
+    skin_system_config = _load_config("system", os.path.join(app_dir, "configs/system", skin_task.components.system))
+    skin_system = get_system(
+        **skin_system_config,
+        model=skin_model,
+        optimizer_config=None,
+        loss_config=None,
+        scheduler_config=None,
+        steps_per_epoch=1,
+    )
+
+    skin_ckpt = download(skin_task.resume_from_checkpoint, base_dir=ckpt_base)
+    print(f">>> [runtime] Loading skin checkpoint: {skin_ckpt}")
+    ckpt = torch.load(skin_ckpt, map_location="cpu")
+    skin_system.load_state_dict(ckpt["state_dict"])
+    del ckpt
+
+    return {
+        "system": skin_system,
+        "task": skin_task,
+        "predict_transform_config": TransformConfig.parse(config=skin_transform_config.predict_transform_config),
+        "predict_dataset_config": DatasetConfig.parse(config=skin_data_config.predict_dataset_config),
+        "process_fn": skin_model._process_fn,
+        "data_name": skin_task.components.get("data_name", "predict_skeleton.npz"),
+        "writer_config": dict(skin_task.writer),
     }
 
 
@@ -232,46 +299,39 @@ class UniRigRuntime:
         _preflight(app_dir)
         torch.set_float32_matmul_precision("high")
 
-        # ── Load skeleton (AR) pipelines: articulation-xl (default) and rignet ──
-        self._skel_pipelines: dict[str, dict] = {}
-        for name, task_path in [
-            ("articulation-xl", SKELETON_TASK_ARTICULATION_XL),
-            ("rignet", SKELETON_TASK_RIGNET),
-        ]:
-            pipeline = _load_skeleton_pipeline(app_dir, task_path)
-            self._skel_pipelines[name] = pipeline
-            print(f">>> [runtime] Loaded skeleton model: {name}")
+        # Copy checkpoints from GCS mount to /tmp for faster torch.load (~10x faster than FUSE)
+        ckpt_base = _copy_checkpoints_to_local(app_dir)
 
-        # ── Load skin pipeline ──
-        skin_task = _load_config("task", os.path.join(app_dir, SKIN_TASK))
-        skin_data_config = _load_config("data", os.path.join(app_dir, "configs/data", skin_task.components.data))
-        skin_transform_config = _load_config("transform", os.path.join(app_dir, "configs/transform", skin_task.components.transform))
+        # Load all 3 models in parallel (skeleton x2 + skin)
+        def load_articulation_xl():
+            return "articulation-xl", _load_skeleton_pipeline(app_dir, SKELETON_TASK_ARTICULATION_XL, ckpt_base_dir=ckpt_base)
 
-        skin_model_config = _load_config("model", os.path.join(app_dir, "configs/model", skin_task.components.model))
-        skin_model = get_model(**skin_model_config)
+        def load_rignet():
+            return "rignet", _load_skeleton_pipeline(app_dir, SKELETON_TASK_RIGNET, ckpt_base_dir=ckpt_base)
 
-        self._skin_predict_transform_config = TransformConfig.parse(config=skin_transform_config.predict_transform_config)
-        self._skin_predict_dataset_config = DatasetConfig.parse(config=skin_data_config.predict_dataset_config)
-        self._skin_process_fn = skin_model._process_fn
-        self._skin_data_name = skin_task.components.get("data_name", "predict_skeleton.npz")
-        self._skin_writer_config = dict(skin_task.writer)
-        self._skin_task = skin_task
+        def load_skin():
+            return "skin", _load_skin_pipeline(app_dir, ckpt_base_dir=ckpt_base)
 
-        skin_system_config = _load_config("system", os.path.join(app_dir, "configs/system", skin_task.components.system))
-        self._skin_system = get_system(
-            **skin_system_config,
-            model=skin_model,
-            optimizer_config=None,
-            loss_config=None,
-            scheduler_config=None,
-            steps_per_epoch=1,
-        )
+        self._skel_pipelines = {}
+        skin_result = None
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            for result in ex.map(lambda fn: fn(), [load_articulation_xl, load_rignet, load_skin]):
+                name, data = result
+                if name == "skin":
+                    skin_result = data
+                else:
+                    self._skel_pipelines[name] = data
+                    print(f">>> [runtime] Loaded skeleton model: {name}")
 
-        skin_ckpt = download(skin_task.resume_from_checkpoint, base_dir=app_dir)
-        print(f">>> [runtime] Loading skin checkpoint: {skin_ckpt}")
-        ckpt = torch.load(skin_ckpt, map_location="cpu")
-        self._skin_system.load_state_dict(ckpt["state_dict"])
-        del ckpt
+        assert skin_result is not None
+        self._skin_predict_transform_config = skin_result["predict_transform_config"]
+        self._skin_predict_dataset_config = skin_result["predict_dataset_config"]
+        self._skin_process_fn = skin_result["process_fn"]
+        self._skin_data_name = skin_result["data_name"]
+        self._skin_writer_config = skin_result["writer_config"]
+        self._skin_task = skin_result["task"]
+        self._skin_system = skin_result["system"]
+        print(">>> [runtime] Loaded skin model")
 
         # Optionally compile models for faster inference after warmup
         if compile_models:
