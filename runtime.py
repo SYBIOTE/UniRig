@@ -50,10 +50,9 @@ def _preflight(app_dir: str) -> None:
 
 
 def _copy_checkpoints_to_local(app_dir: str) -> str:
-    """Copy checkpoints from GCS mount to /tmp for faster torch.load.
-    GCS FUSE reads are ~10x slower than local disk; copying first then loading
-    from /tmp significantly reduces Cloud Run cold-start time.
-    Set UNIRIG_CACHE_CKPTS=1 to enable (default on Cloud Run)."""
+    """Copy checkpoints from network volume to /tmp for faster torch.load.
+    Volume reads are slower than local disk; copying first reduces cold-start time.
+    Set UNIRIG_CACHE_CKPTS=1 to enable (default)."""
     if os.environ.get("UNIRIG_CACHE_CKPTS", "1") != "1":
         return app_dir
     cache_dir = "/tmp/unirig_ckpts"
@@ -299,7 +298,7 @@ class UniRigRuntime:
         _preflight(app_dir)
         torch.set_float32_matmul_precision("high")
 
-        # Copy checkpoints from GCS mount to /tmp for faster torch.load (~10x faster than FUSE)
+        # Copy checkpoints from network volume to /tmp for faster torch.load
         ckpt_base = _copy_checkpoints_to_local(app_dir)
 
         # Load all 3 models in parallel (skeleton x2 + skin)

@@ -1,19 +1,12 @@
-# UniRig API (production)
-# Tiny layer on top of the shared base — rebuilds in seconds when only app code changes.
+# UniRig API (production) — RunPod Serverless
+# Thin layer on Dockerfile.base: FastAPI + uvicorn + entrypoint.
 #
-# Build (standalone — if not using the base workflow):
-#   DOCKER_BUILDKIT=1 docker build -f Dockerfile.base --target blender-base -t unirig-blender-base .
-#   DOCKER_BUILDKIT=1 docker build -f Dockerfile.base -t unirig-base .
-#   DOCKER_BUILDKIT=1 docker build -t unirig-api .
+# Build context must be UniRig/ (monorepo subdir).
 #
-# Run:
-#   docker run --gpus all -p 8080:8080 unirig-api
-#
-# Cloud Build:
-#   gcloud builds submit --config cloudbuild.yaml --substitutions=_REGION=us-central1
+#   DOCKER_BUILDKIT=1 docker build -f Dockerfile.base -t sybiote/unirig-base:latest .
+#   DOCKER_BUILDKIT=1 docker build --build-arg BASE_IMAGE=sybiote/unirig-base:latest -f Dockerfile -t sybiote/unirig-api:latest .
 
-# ── The base image tag is overridden by cloudbuild.yaml via --build-arg ──
-ARG BASE_IMAGE=unirig-base:latest
+ARG BASE_IMAGE=docker.io/sybiote/unirig-base:latest
 FROM ${BASE_IMAGE}
 
 # ── API-specific deps (fastapi, uvicorn — lightweight) ──

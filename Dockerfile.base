@@ -1,14 +1,10 @@
-# UniRig shared base image (multi-stage)
-# Stage 1 (blender-base): isolated bpy/Blender runtime + smoke test.
-# Stage 2 (ml-builder): CUDA devel — torch, flash_attn, and ML deps.
-# Stage 3 (runtime): build the full serving base on top of blender-base.
+# UniRig shared base image (multi-stage) — RunPod / Docker GPU inference
+# Stage 1 (blender-base): bpy/Blender runtime + smoke test.
+# Stage 2 (ml-builder): CUDA devel — torch, flash_attn, ML deps.
+# Stage 3 (runtime): serving base on top of blender-base.
 #
-# Build (requires BuildKit for cache mounts; use DOCKER_BUILDKIT=1 or docker buildx):
-#   DOCKER_BUILDKIT=1 docker build -f Dockerfile.base --target blender-base -t unirig-blender-base .
-#   DOCKER_BUILDKIT=1 docker build -f Dockerfile.base -t unirig-base .
-#
-# Cloud Build (see cloudbuild.yaml):
-#   Built automatically as the first step; the API image uses it via FROM.
+# Build (requires BuildKit; context = UniRig/):
+#   DOCKER_BUILDKIT=1 docker build -f Dockerfile.base -t sybiote/unirig-base:latest .
 
 ARG CUDA_VERSION=12.4.1
 
@@ -89,7 +85,7 @@ COPY requirements-torch.txt ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system -r requirements-torch.txt
 
-# Layer 2: flash_attn from prebuilt wheel (avoids 30+ min compile; Cloud Build OOM/internal errors)
+# Layer 2: flash_attn from prebuilt wheel (avoids 30+ min compile)
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system \
     https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.4cxx11abiFALSE-cp311-cp311-linux_x86_64.whl \
@@ -112,15 +108,13 @@ FROM blender-base AS runtime
 COPY --from=ml-builder /usr/local/lib/python3.11/dist-packages /usr/local/lib/python3.11/dist-packages
 
 # ── Layer 4: Checkpoint directory (mount volume at runtime) ──
-# Checkpoints are NOT baked in. Mount via: -v ./ckpts:/app/experiments
-# See DEPLOY.md for download instructions.
+# Checkpoints are NOT baked in. Mount via volume at runtime.
+# See RUNPOD.md and ckpts/README.md.
 RUN mkdir -p /app/experiments
 
-# ── Layer 5: App code ──
+# ── Layer 5: App code (inference only) ──
 COPY src/ src/
 COPY configs/ configs/
-COPY launch/ launch/
-COPY run.py .
 COPY runtime.py .
 
 # Pre-cache transformers config for facebook/opt-350m (used by AR model) so startup works offline

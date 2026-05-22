@@ -1,10 +1,11 @@
-# UniRig — build and run
-.PHONY: ckpts build-blender-base build-base build-api build up down logs
+# UniRig — build for RunPod / local Docker
+.PHONY: ckpts build-base build-api build push-base push-api
 
-DOCKER_BUILD := docker build
+DOCKER_BUILD := DOCKER_BUILDKIT=1 docker build
+IMAGE_USER ?= sybiote
 
 ckpts:
-	@echo ">>> Downloading checkpoints to ckpts/ (~2GB)..."
+	@echo ">>> Downloading checkpoints to ckpts/ (~6GB)..."
 	@test -n "$${HF_TOKEN}" || (echo "Set HF_TOKEN (e.g. export HF_TOKEN=your_token)"; exit 1)
 	HF_TOKEN=$${HF_TOKEN} hf download VAST-AI/UniRig \
 		--include "skeleton/articulation-xl_quantization_256/model.ckpt" \
@@ -13,22 +14,19 @@ ckpts:
 		--local-dir ckpts
 	@echo ">>> Done. Verify: ls ckpts/skeleton ckpts/skin"
 
-build-blender-base:
-	$(DOCKER_BUILD) -f Dockerfile.base --target blender-base -t unirig-blender-base:latest .
-
 build-base:
-	$(DOCKER_BUILD) -f Dockerfile.base -t unirig-base:latest .
+	$(DOCKER_BUILD) -f Dockerfile.base -t $(IMAGE_USER)/unirig-base:latest .
 
 build-api: build-base
-	$(DOCKER_BUILD) -t unirig-api:latest .
+	$(DOCKER_BUILD) --build-arg BASE_IMAGE=$(IMAGE_USER)/unirig-base:latest \
+		-f Dockerfile -t $(IMAGE_USER)/unirig-api:latest .
 
 build: build-api
 
-up: build
-	docker compose up -d
+push-base:
+	docker push $(IMAGE_USER)/unirig-base:latest
 
-down:
-	docker compose down
+push-api:
+	docker push $(IMAGE_USER)/unirig-api:latest
 
-logs:
-	docker compose logs -f
+push: push-base push-api

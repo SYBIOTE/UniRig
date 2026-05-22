@@ -74,7 +74,17 @@ docker build --build-arg BASE_IMAGE=YOUR_USER/unirig-base:latest \
 docker push YOUR_USER/unirig-api:latest
 ```
 
-In RunPod Git/Docker build, set build arg **`BASE_IMAGE`**.
+In RunPod Git/Docker build, set build arg **`BASE_IMAGE=docker.io/sybiote/unirig-base:latest`** (or your registry tag).
+
+### Troubleshooting Git build: `unirig-base:latest: pull access denied`
+
+RunPod is pulling `docker.io/library/unirig-base:latest` (no Docker Hub user). Fix:
+
+1. **Build arg** in RunPod endpoint → Edit → Build → add:
+   - Name: `BASE_IMAGE`
+   - Value: `docker.io/sybiote/unirig-base:latest`
+2. **Push base first:** `docker push sybiote/unirig-base:latest` (repo must be **public**, or add registry credentials in RunPod).
+3. **Push updated `Dockerfile`** to the Git repo RunPod builds from (default is now `docker.io/sybiote/unirig-base:latest`, but older commits used bare `unirig-base:latest`).
 
 ## RunPod Serverless endpoint
 
@@ -127,6 +137,5 @@ Push code and redeploy Vercel. The proxy adds RunPod auth when `RUNPOD_API_KEY` 
 
 ## References
 
-- API contract: [DEPLOY.md](DEPLOY.md)
-- Cloud Run (GCS volume): [DEPLOY_CLOUD_RUN.md](DEPLOY_CLOUD_RUN.md)
-- HY-Motion RunPod (same volume pattern): [../HY-Motion-1.0/RUNPOD.md](../HY-Motion-1.0/RUNPOD.md)
+- Local Docker: [DEPLOY.md](DEPLOY.md)
+- HY-Motion RunPod (shared volume): [../HY-Motion-1.0/RUNPOD.md](../HY-Motion-1.0/RUNPOD.md)
