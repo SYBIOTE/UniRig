@@ -5,6 +5,7 @@
 #
 #   DOCKER_BUILDKIT=1 docker build -f Dockerfile.base -t sybiote/unirig-base:latest .
 #   DOCKER_BUILDKIT=1 docker build --build-arg BASE_IMAGE=sybiote/unirig-base:latest -f Dockerfile -t sybiote/unirig-api:latest .
+# runtime.py is copied in Dockerfile (overrides base). Rebuild base only when ML deps/src/configs change.
 
 ARG BASE_IMAGE=docker.io/sybiote/unirig-base:latest
 FROM ${BASE_IMAGE}
@@ -14,8 +15,9 @@ COPY requirements-api.txt .
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system --no-cache -r requirements-api.txt
 
-# ── App code ──
+# ── App code (runtime.py here overrides base — avoids full base rebuild for runtime changes) ──
 COPY api.py .
+COPY runtime.py .
 COPY scripts/ scripts/
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh

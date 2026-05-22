@@ -69,10 +69,12 @@ cd UniRig
 DOCKER_BUILDKIT=1 docker build -f Dockerfile.base -t YOUR_USER/unirig-base:latest .
 docker push YOUR_USER/unirig-base:latest
 
-docker build --build-arg BASE_IMAGE=YOUR_USER/unirig-base:latest \
-  -f Dockerfile -t YOUR_USER/unirig-api:latest .
+docker build --build-arg BASE_IMAGE=docker.io/sybiote/unirig-base:latest \
+  -f Dockerfile -t sybiote/unirig-api:latest .
 docker push YOUR_USER/unirig-api:latest
 ```
+
+**Note:** `runtime.py`, `api.py`, and `docker-entrypoint.sh` live in the thin `Dockerfile` layer. Rebuild **only** `Dockerfile` after those change. Rebuild `Dockerfile.base` when `src/`, `configs/`, or ML deps change.
 
 In RunPod Git/Docker build, set build arg **`BASE_IMAGE=docker.io/sybiote/unirig-base:latest`** (or your registry tag).
 
