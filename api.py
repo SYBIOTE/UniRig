@@ -3,8 +3,8 @@ UniRig microservice: auto-rig 3D meshes via file upload.
 Exposes POST /rig, POST /rig/fast, POST /skeleton, POST /skeleton/fast, POST /skin,
 GET /health, and GET /ping (RunPod liveness).
 
-Models are loaded once at startup via UniRigRuntime and reused across requests,
-avoiding the ~60-90s overhead of re-loading checkpoints per request.
+Models are loaded in a background thread at startup so the HTTP server listens
+immediately; /ping returns 204 until loading completes, then 200.
 
 Usage:
     python -m uvicorn api:app --host 0.0.0.0 --port 8080
@@ -13,10 +13,11 @@ Usage:
 import os
 import shutil
 import tempfile
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
 
 from runtime import UniRigRuntime
@@ -27,6 +28,7 @@ DEFAULT_SEED = 12345
 DEFAULT_OUTPUT_FORMAT = "glb"
 
 _runtime: UniRigRuntime | None = None
+_load_error: str | None = None
 
 
 def _get_ext(filename: str) -> str:
@@ -70,23 +72,43 @@ def _cleanup_dir(path: str) -> None:
 
 
 def _get_runtime() -> UniRigRuntime:
+    if _load_error is not None:
+        raise HTTPException(503, f"Runtime failed to load: {_load_error}")
     if _runtime is None:
         raise HTTPException(503, "Runtime not loaded yet — server is still starting")
     return _runtime
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global _runtime
+def _probe_response() -> Response | dict:
+    """RunPod load balancer: 204 while initializing, 200 when ready."""
+    if _load_error is not None:
+        raise HTTPException(503, f"Runtime failed to load: {_load_error}")
+    if _runtime is None:
+        return Response(status_code=204)
+    return {"status": "ok"}
+
+
+def _load_runtime() -> None:
+    global _runtime, _load_error
     compile_models = os.environ.get("UNIRIG_COMPILE", "0") == "1"
     app_dir = os.environ.get("UNIRIG_APP_DIR", "/app")
     try:
         _runtime = UniRigRuntime(app_dir=app_dir, compile_models=compile_models)
-    except Exception as e:
-        print(f">>> [FATAL] Failed to load runtime: {e}")
-        raise
+    except Exception as exc:
+        print(f">>> [FATAL] Failed to load runtime: {exc}")
+        _load_error = str(exc)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _runtime, _load_error
+    _runtime = None
+    _load_error = None
+    thread = threading.Thread(target=_load_runtime, daemon=True)
+    thread.start()
     yield
     _runtime = None
+    _load_error = None
 
 
 app = FastAPI(title="UniRig API", version="2.0", lifespan=lifespan)
@@ -94,13 +116,13 @@ app = FastAPI(title="UniRig API", version="2.0", lifespan=lifespan)
 
 @app.get("/ping")
 def ping():
-    """RunPod liveness probe (200, no extra work)."""
-    return {"status": "ok"}
+    """RunPod load-balancer probe (204 while initializing, 200 when ready)."""
+    return _probe_response()
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return _probe_response()
 
 
 @app.post("/rig/fast")

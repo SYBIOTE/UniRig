@@ -101,6 +101,8 @@ RunPod is pulling `docker.io/library/unirig-base:latest` (no Docker Hub user). F
 | `UNIRIG_CACHE_CKPTS` | `1` | Copy volume → `/tmp` at startup (faster load) |
 | `UNIRIG_COMPILE` | `0` | Set `1` only after measuring cold-start impact |
 | `NVIDIA_DRIVER_CAPABILITIES` | `graphics,compute,utility` | Required for Blender headless |
+| `PORT` | `8080` | HTTP server port (RunPod default is `80`; set `8080` and **Expose HTTP Ports** `8080`) |
+| `PORT_HEALTH` | `8080` | Health probe port — same as `PORT` unless you run a separate listener |
 
 Entrypoint links `/runpod-volume/unirig` → `/app/experiments` automatically when present.
 
@@ -114,8 +116,10 @@ Entrypoint links `/runpod-volume/unirig` → `/app/experiments` automatically wh
 
 ### HTTP probes
 
-- `GET /ping` — liveness (`{"status":"ok"}`)
-- `GET /health` — same once models are loaded
+RunPod load balancers expect the worker on `PORT` and `/ping` on `PORT_HEALTH` (usually the same port).
+
+- `GET /ping` — **204** while models load (2–4 min cold start), **200** `{"status":"ok"}` when ready
+- `GET /health` — same semantics as `/ping`
 
 Auth (load balancer): `Authorization: Bearer YOUR_RUNPOD_API_KEY`
 
