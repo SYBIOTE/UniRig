@@ -1,6 +1,7 @@
 """
 UniRig microservice: auto-rig 3D meshes via file upload.
-Exposes POST /rig, POST /rig/fast, POST /skeleton, POST /skeleton/fast, POST /skin, GET /health.
+Exposes POST /rig, POST /rig/fast, POST /skeleton, POST /skeleton/fast, POST /skin,
+GET /health, and GET /ping (RunPod liveness).
 
 Models are loaded once at startup via UniRigRuntime and reused across requests,
 avoiding the ~60-90s overhead of re-loading checkpoints per request.
@@ -89,6 +90,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="UniRig API", version="2.0", lifespan=lifespan)
+
+
+@app.get("/ping")
+def ping():
+    """RunPod liveness probe (200, no extra work)."""
+    return {"status": "ok"}
 
 
 @app.get("/health")

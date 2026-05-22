@@ -23,6 +23,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # ── App code ──
 COPY api.py .
+COPY scripts/ scripts/
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 # UNIRIG_COMPILE=1 enables torch.compile for faster inference after warmup, but increases cold-start time.
 # Set to 1 only if you have measured acceptable startup latency.
@@ -32,6 +35,7 @@ EXPOSE 8080
 
 # Requires GPU: run with docker run --gpus all -p 8080:8080 ...
 HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-8080}/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8080}/ping || exit 1
 
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["python", "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]

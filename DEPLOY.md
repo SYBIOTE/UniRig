@@ -2,6 +2,8 @@
 
 Deploy the UniRig auto-rigging API as a Docker service with GPU support.
 
+**RunPod Serverless + shared network volume:** see [RUNPOD.md](RUNPOD.md).
+
 ## Prerequisites
 
 - **NVIDIA GPU** with CUDA 12.x
