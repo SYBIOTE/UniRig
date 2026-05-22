@@ -13,9 +13,14 @@ if [[ -z "$CKPTS_SRC" && -d /runpod-volume/unirig ]]; then
   CKPTS_SRC=/runpod-volume/unirig
 fi
 if [[ -n "$CKPTS_SRC" && -d "$CKPTS_SRC" ]]; then
-  rm -rf /app/experiments
-  ln -sfn "$CKPTS_SRC" /app/experiments
-  echo ">>> Linked /app/experiments -> $CKPTS_SRC"
+  CKPTS_SRC="$(readlink -f "$CKPTS_SRC")"
+  if [[ -L /app/experiments ]] && [[ "$(readlink -f /app/experiments)" == "$CKPTS_SRC" ]]; then
+    echo ">>> /app/experiments already linked -> $CKPTS_SRC"
+  else
+    rm -rf /app/experiments
+    ln -sfn "$CKPTS_SRC" /app/experiments
+    echo ">>> Linked /app/experiments -> $CKPTS_SRC"
+  fi
 fi
 
 if ! python scripts/ensure_checkpoints.py; then

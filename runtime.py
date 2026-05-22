@@ -11,7 +11,7 @@ import os
 import shutil
 import subprocess
 import threading
-from concurrent.futures import ThreadPoolExecutor
+import time
 from typing import Union
 
 import numpy as np
@@ -20,26 +20,18 @@ import yaml
 import lightning as L
 from box import Box
 
-from src.inference.download import download, REQUIRED_FOR_API
+from src.inference.download import download
 from src.data.extract import get_files
 from src.tokenizer.spec import DetokenizeOutput
 
 
-def _preflight(app_dir: str) -> None:
-    """Fail fast with clear errors if runtime environment is not ready."""
+def _preflight() -> None:
+    """Fail fast if GPU and native extensions are unavailable."""
     if not torch.cuda.is_available():
         raise RuntimeError(
             "CUDA is not available. UniRig requires a GPU. "
             "Run with: docker run --gpus all ..."
         )
-    for ckpt_name in REQUIRED_FOR_API:
-        local_path = os.path.join(app_dir, ckpt_name)
-        if not os.path.isfile(local_path):
-            raise FileNotFoundError(
-                f"Checkpoint missing: {ckpt_name}. "
-                "Pre-download to ckpts/ before building. See ckpts/README.md."
-            )
-    # Ensure flash_attn (and thus torch libs) load correctly before model init
     try:
         from flash_attn.modules.mha import MHA  # noqa: F401
     except Exception as e:
@@ -49,28 +41,15 @@ def _preflight(app_dir: str) -> None:
         ) from e
 
 
-def _copy_checkpoints_to_local(app_dir: str) -> str:
-    """Copy checkpoints from network volume to /tmp for faster torch.load.
-    Volume reads are slower than local disk; copying first reduces cold-start time.
-    Set UNIRIG_CACHE_CKPTS=1 to enable (default)."""
-    if os.environ.get("UNIRIG_CACHE_CKPTS", "1") != "1":
-        return app_dir
-    cache_dir = "/tmp/unirig_ckpts"
-    os.makedirs(cache_dir, exist_ok=True)
-
-    def _copy_one(ckpt_name: str) -> None:
-        src = os.path.join(app_dir, ckpt_name)
-        dst = os.path.join(cache_dir, ckpt_name)
-        dst_dir = os.path.dirname(dst)
-        os.makedirs(dst_dir, exist_ok=True)
-        print(f">>> [runtime] Copying {ckpt_name} to local cache...")
-        shutil.copy2(src, dst)
-        print(f">>> [runtime] Cached {ckpt_name}")
-
-    with ThreadPoolExecutor(max_workers=3) as ex:
-        ex.map(_copy_one, REQUIRED_FOR_API)
-
-    return cache_dir
+def _load_checkpoint(path: str) -> dict:
+    """Load a .ckpt from the network volume with minimal overhead."""
+    t0 = time.perf_counter()
+    try:
+        ckpt = torch.load(path, map_location="cpu", mmap=True, weights_only=False)
+    except TypeError:
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    print(f">>> [runtime] Loaded checkpoint in {time.perf_counter() - t0:.1f}s: {path}")
+    return ckpt
 
 
 from src.data.dataset import UniRigDatasetModule, DatasetConfig
@@ -94,9 +73,8 @@ def _load_config(task: str, path: str) -> Box:
     return Box(yaml.safe_load(open(path, "r")))
 
 
-def _load_skeleton_pipeline(app_dir: str, task_path: str, ckpt_base_dir: str | None = None) -> dict:
+def _load_skeleton_pipeline(app_dir: str, task_path: str) -> dict:
     """Load a skeleton (AR) pipeline from a task config. Returns dict with system, task, configs, etc."""
-    ckpt_base = ckpt_base_dir or app_dir
     skel_task = _load_config("task", os.path.join(app_dir, task_path))
     skel_data_config = _load_config("data", os.path.join(app_dir, "configs/data", skel_task.components.data))
     skel_transform_config = _load_config("transform", os.path.join(app_dir, "configs/transform", skel_task.components.transform))
@@ -118,10 +96,11 @@ def _load_skeleton_pipeline(app_dir: str, task_path: str, ckpt_base_dir: str | N
         steps_per_epoch=1,
     )
 
-    skel_ckpt = download(skel_task.resume_from_checkpoint, base_dir=ckpt_base)
-    ckpt = torch.load(skel_ckpt, map_location="cpu")
+    skel_ckpt = download(skel_task.resume_from_checkpoint, base_dir=app_dir)
+    ckpt = _load_checkpoint(skel_ckpt)
     skel_system.load_state_dict(ckpt["state_dict"])
     del ckpt
+    skel_system.eval()
 
     return {
         "system": skel_system,
@@ -135,9 +114,8 @@ def _load_skeleton_pipeline(app_dir: str, task_path: str, ckpt_base_dir: str | N
     }
 
 
-def _load_skin_pipeline(app_dir: str, ckpt_base_dir: str | None = None) -> dict:
+def _load_skin_pipeline(app_dir: str) -> dict:
     """Load the skin pipeline. Returns dict with system, configs, etc."""
-    ckpt_base = ckpt_base_dir or app_dir
     skin_task = _load_config("task", os.path.join(app_dir, SKIN_TASK))
     skin_data_config = _load_config("data", os.path.join(app_dir, "configs/data", skin_task.components.data))
     skin_transform_config = _load_config("transform", os.path.join(app_dir, "configs/transform", skin_task.components.transform))
@@ -155,11 +133,11 @@ def _load_skin_pipeline(app_dir: str, ckpt_base_dir: str | None = None) -> dict:
         steps_per_epoch=1,
     )
 
-    skin_ckpt = download(skin_task.resume_from_checkpoint, base_dir=ckpt_base)
-    print(f">>> [runtime] Loading skin checkpoint: {skin_ckpt}")
-    ckpt = torch.load(skin_ckpt, map_location="cpu")
+    skin_ckpt = download(skin_task.resume_from_checkpoint, base_dir=app_dir)
+    ckpt = _load_checkpoint(skin_ckpt)
     skin_system.load_state_dict(ckpt["state_dict"])
     del ckpt
+    skin_system.eval()
 
     return {
         "system": skin_system,
@@ -289,40 +267,35 @@ def _run_shell(cmd: str, cwd: str = "/app", timeout: int = SHELL_TIMEOUT) -> Non
 
 
 class UniRigRuntime:
-    """Persistent runtime that keeps both models loaded in memory."""
+    """Persistent runtime that keeps models loaded in memory."""
 
     def __init__(self, app_dir: str = "/app", compile_models: bool = False):
         self._app_dir = app_dir
         self._lock = threading.Lock()
+        self._model_init_lock = threading.Lock()
+        self._preload_rignet = os.environ.get("UNIRIG_PRELOAD_RIGNET", "0") == "1"
 
-        _preflight(app_dir)
+        _preflight()
+        print(">>> [runtime] Preflight OK — loading checkpoints from volume into memory...")
         torch.set_float32_matmul_precision("high")
 
-        # Copy checkpoints from network volume to /tmp for faster torch.load
-        ckpt_base = _copy_checkpoints_to_local(app_dir)
+        t0 = time.perf_counter()
+        self._skel_pipelines = {
+            "articulation-xl": _load_skeleton_pipeline(app_dir, SKELETON_TASK_ARTICULATION_XL),
+        }
+        print(f">>> [runtime] articulation-xl ready ({time.perf_counter() - t0:.1f}s elapsed)")
 
-        # Load all 3 models in parallel (skeleton x2 + skin)
-        def load_articulation_xl():
-            return "articulation-xl", _load_skeleton_pipeline(app_dir, SKELETON_TASK_ARTICULATION_XL, ckpt_base_dir=ckpt_base)
+        t1 = time.perf_counter()
+        skin_result = _load_skin_pipeline(app_dir)
+        print(f">>> [runtime] skin ready ({time.perf_counter() - t1:.1f}s elapsed)")
 
-        def load_rignet():
-            return "rignet", _load_skeleton_pipeline(app_dir, SKELETON_TASK_RIGNET, ckpt_base_dir=ckpt_base)
+        if self._preload_rignet:
+            t2 = time.perf_counter()
+            self._skel_pipelines["rignet"] = _load_skeleton_pipeline(app_dir, SKELETON_TASK_RIGNET)
+            print(f">>> [runtime] rignet ready ({time.perf_counter() - t2:.1f}s elapsed)")
+        else:
+            print(">>> [runtime] rignet deferred (loads on first /rig/fast or /skeleton/fast request)")
 
-        def load_skin():
-            return "skin", _load_skin_pipeline(app_dir, ckpt_base_dir=ckpt_base)
-
-        self._skel_pipelines = {}
-        skin_result = None
-        with ThreadPoolExecutor(max_workers=3) as ex:
-            for result in ex.map(lambda fn: fn(), [load_articulation_xl, load_rignet, load_skin]):
-                name, data = result
-                if name == "skin":
-                    skin_result = data
-                else:
-                    self._skel_pipelines[name] = data
-                    print(f">>> [runtime] Loaded skeleton model: {name}")
-
-        assert skin_result is not None
         self._skin_predict_transform_config = skin_result["predict_transform_config"]
         self._skin_predict_dataset_config = skin_result["predict_dataset_config"]
         self._skin_process_fn = skin_result["process_fn"]
@@ -330,7 +303,6 @@ class UniRigRuntime:
         self._skin_writer_config = skin_result["writer_config"]
         self._skin_task = skin_result["task"]
         self._skin_system = skin_result["system"]
-        print(">>> [runtime] Loaded skin model")
 
         # Optionally compile models for faster inference after warmup
         if compile_models:
@@ -343,7 +315,25 @@ class UniRigRuntime:
                 print(f">>> [runtime] torch.compile failed (non-fatal): {e}")
 
         self._ready = True
-        print(">>> [runtime] UniRigRuntime initialized")
+        print(f">>> [runtime] UniRigRuntime initialized ({time.perf_counter() - t0:.1f}s total)")
+
+    def _ensure_skeleton_model(self, skeleton_model: str) -> None:
+        if skeleton_model in self._skel_pipelines:
+            return
+        if skeleton_model != "rignet":
+            raise ValueError(
+                f"Unknown skeleton_model: {skeleton_model}. "
+                f"Use one of: articulation-xl, rignet"
+            )
+        with self._model_init_lock:
+            if skeleton_model in self._skel_pipelines:
+                return
+            print(">>> [runtime] Lazy-loading rignet...")
+            t0 = time.perf_counter()
+            self._skel_pipelines["rignet"] = _load_skeleton_pipeline(
+                self._app_dir, SKELETON_TASK_RIGNET
+            )
+            print(f">>> [runtime] rignet ready ({time.perf_counter() - t0:.1f}s elapsed)")
 
     # ── Public API ──
 
@@ -357,6 +347,7 @@ class UniRigRuntime:
     ) -> str:
         """Extract mesh + predict skeleton. Returns path to skeleton FBX.
         skeleton_model: 'articulation-xl' (default, higher quality) or 'rignet' (faster, smaller)."""
+        self._ensure_skeleton_model(skeleton_model)
         with self._lock:
             return self._generate_skeleton(input_path, output_path, seed, npz_dir, skeleton_model)
 
@@ -368,6 +359,7 @@ class UniRigRuntime:
         skeleton_model: str = "articulation-xl",
     ) -> dict:
         """Extract mesh + predict skeleton. Returns structured skeleton data as a dict (no FBX)."""
+        self._ensure_skeleton_model(skeleton_model)
         with self._lock:
             return self._generate_skeleton_data(input_path, seed, npz_dir, skeleton_model)
 

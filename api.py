@@ -3,8 +3,8 @@ UniRig microservice: auto-rig 3D meshes via file upload.
 Exposes POST /rig, POST /rig/fast, POST /skeleton, POST /skeleton/fast, POST /skin,
 GET /health, and GET /ping (RunPod liveness).
 
-Models are loaded in a background thread at startup so the HTTP server listens
-immediately; /ping returns 204 until loading completes, then 200.
+Models load in a background thread: HTTP listens immediately (/ping 204),
+then articulation-xl + skin load from the volume; rignet loads on first fast request.
 
 Usage:
     python -m uvicorn api:app --host 0.0.0.0 --port 8080
@@ -20,14 +20,12 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
 
-from runtime import UniRigRuntime
-
 ALLOWED_EXTENSIONS = {"obj", "fbx", "glb", "gltf", "vrm", "dae"}
 ALLOWED_OUTPUT_FORMATS = {"glb", "fbx", "gltf"}
 DEFAULT_SEED = 12345
 DEFAULT_OUTPUT_FORMAT = "glb"
 
-_runtime: UniRigRuntime | None = None
+_runtime: object | None = None
 _load_error: str | None = None
 
 
@@ -71,7 +69,7 @@ def _cleanup_dir(path: str) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
-def _get_runtime() -> UniRigRuntime:
+def _get_runtime():
     if _load_error is not None:
         raise HTTPException(503, f"Runtime failed to load: {_load_error}")
     if _runtime is None:
@@ -90,10 +88,14 @@ def _probe_response() -> Response | dict:
 
 def _load_runtime() -> None:
     global _runtime, _load_error
+    from runtime import UniRigRuntime
+
     compile_models = os.environ.get("UNIRIG_COMPILE", "0") == "1"
     app_dir = os.environ.get("UNIRIG_APP_DIR", "/app")
+    print(f">>> [api] Background model load started (app_dir={app_dir})")
     try:
         _runtime = UniRigRuntime(app_dir=app_dir, compile_models=compile_models)
+        print(">>> [api] Background model load finished — /ping will return 200")
     except Exception as exc:
         print(f">>> [FATAL] Failed to load runtime: {exc}")
         _load_error = str(exc)

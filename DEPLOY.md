@@ -40,5 +40,5 @@ curl -X POST -F "file=@mesh.glb" -F "output_format=json" http://localhost:8080/s
 |-----|---------|-------------|
 | `UNIRIG_APP_DIR` | `/app` | App root |
 | `UNIRIG_COMPILE` | `0` | `1` = torch.compile (slower cold start) |
-| `UNIRIG_CACHE_CKPTS` | `1` | Copy ckpts to `/tmp` before load |
+| `UNIRIG_PRELOAD_RIGNET` | `0` | `1` = load rignet at startup |
 | `SKIP_CHECKPOINT_PREP` | `0` | `1` = skip entrypoint verify |

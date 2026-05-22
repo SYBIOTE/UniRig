@@ -98,8 +98,8 @@ RunPod is pulling `docker.io/library/unirig-base:latest` (no Docker Hub user). F
 |----------|---------|--------|
 | `UNIRIG_APP_DIR` | `/app` | App root |
 | `UNIRIG_CKPTS_ROOT` | `/runpod-volume/unirig` | Optional; auto-detected if dir exists |
-| `UNIRIG_CACHE_CKPTS` | `1` | Copy volume → `/tmp` at startup (faster load) |
 | `UNIRIG_COMPILE` | `0` | Set `1` only after measuring cold-start impact |
+| `UNIRIG_PRELOAD_RIGNET` | `0` | Set `1` to load rignet at startup (adds ~1 min; studio uses articulation-xl) |
 | `NVIDIA_DRIVER_CAPABILITIES` | `graphics,compute,utility` | Required for Blender headless |
 | `PORT` | `8080` | HTTP server port (RunPod default is `80`; set `8080` and **Expose HTTP Ports** `8080`) |
 | `PORT_HEALTH` | `8080` | Health probe port — same as `PORT` unless you run a separate listener |
@@ -108,17 +108,45 @@ Entrypoint links `/runpod-volume/unirig` → `/app/experiments` automatically wh
 
 ### Suggested endpoint settings
 
-| Setting | Value |
-|---------|--------|
-| GPU | L4 24GB or RTX 4090 |
-| Request timeout | 600s |
-| Active workers | `0` (cost) or `1` (avoid 2–4 min cold start) |
+| Setting | Value | Why |
+|---------|--------|-----|
+| GPU | L4 24GB or RTX 4090 | Skin + skeleton models need ~16–20 GB VRAM at inference |
+| Datacenter | Same as network volume (e.g. EU-RO-1) | Avoid cross-region volume latency |
+| Request timeout | 600s | Full `/rig` pipeline can take several minutes |
+| Active workers | `1` for production | Avoid 2–5 min cold start on every request |
+| Max workers | `1` | One GPU process per worker |
+| Expose HTTP Ports | `8080` | Must match `PORT` / `PORT_HEALTH` |
+
+### Cold start (optimized defaults)
+
+Startup sequence:
+
+1. Symlink `/runpod-volume/unirig` → `/app/experiments` (no copy)
+2. HTTP server listens immediately; `/ping` returns **204**
+3. Load **articulation-xl** (~1.4 GB) then **skin** (~4.1 GB) sequentially from the volume
+4. **rignet** (~593 MB) is **not** loaded until the first `/rig/fast` or `/skeleton/fast` request
+5. `/ping` returns **200** when articulation-xl + skin are ready (~2–4 min typical)
+
+Do **not** set:
+
+- `UNIRIG_COMPILE=1` — adds minutes to startup
+- `UNIRIG_PRELOAD_RIGNET=1` — unless you mostly use `/skeleton/fast`
+
+Check worker logs for timing:
+
+```
+>>> [runtime] Loaded checkpoint in …s: …/articulation-xl…/model.ckpt
+>>> [runtime] articulation-xl ready (…s elapsed)
+>>> [runtime] skin ready (…s elapsed)
+>>> [runtime] rignet deferred …
+>>> [api] Background model load finished — /ping will return 200
+```
 
 ### HTTP probes
 
 RunPod load balancers expect the worker on `PORT` and `/ping` on `PORT_HEALTH` (usually the same port).
 
-- `GET /ping` — **204** while models load (2–4 min cold start), **200** `{"status":"ok"}` when ready
+- `GET /ping` — **204** while articulation-xl + skin load (~2–4 min), **200** when ready
 - `GET /health` — same semantics as `/ping`
 
 Auth (load balancer): `Authorization: Bearer YOUR_RUNPOD_API_KEY`

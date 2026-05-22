@@ -23,14 +23,16 @@ RUN chmod +x /docker-entrypoint.sh
 # UNIRIG_COMPILE=1 enables torch.compile for faster inference after warmup, but increases cold-start time.
 # Set to 1 only if you have measured acceptable startup latency.
 ENV UNIRIG_COMPILE=0
+ENV UNIRIG_PRELOAD_RIGNET=0
 ENV PORT=8080
 ENV PORT_HEALTH=8080
 
 EXPOSE 8080
 
 # Requires GPU: run with docker run --gpus all -p 8080:8080 ...
-HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=3 \
+# start-period: 3 models + GPU init can take several minutes on cold start
+HEALTHCHECK --interval=30s --timeout=10s --start-period=600s --retries=3 \
     CMD curl -f http://localhost:${PORT_HEALTH:-${PORT:-8080}}/ping || exit 1
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
-CMD ["sh", "-c", "exec python -m uvicorn api:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1"]
+CMD ["sh", "-c", "exec python -m uvicorn api:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1 --no-access-log"]
