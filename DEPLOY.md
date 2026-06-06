@@ -24,14 +24,13 @@ docker run --gpus all -p 8080:8080 \
 | Endpoint | Description |
 |----------|-------------|
 | `GET /ping`, `/health` | Liveness |
-| `POST /rig` | Full pipeline (articulation-xl) |
-| `POST /rig/fast` | Full pipeline (rignet, faster) |
-| `POST /skeleton` | Skeleton only (articulation-xl) |
-| `POST /skeleton/fast` | Skeleton only (rignet) |
-| `POST /skin` | Skin + merge |
+| `POST /rig` | Full pipeline JSON — skeleton + skin weights (articulation-xl) |
+| `POST /rig/fast` | Full pipeline JSON (rignet, faster) |
+| `POST /skeleton` | Skeleton JSON only (articulation-xl) |
+| `POST /skeleton/fast` | Skeleton JSON only (rignet) |
 
 ```bash
-curl -X POST -F "file=@mesh.glb" -F "output_format=json" http://localhost:8080/skeleton/fast
+curl -X POST -F "file=@mesh.glb" http://localhost:8080/rig
 ```
 
 ## Configuration

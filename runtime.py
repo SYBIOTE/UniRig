@@ -3,8 +3,8 @@ UniRig in-process runtime: loads AR (skeleton) and skin models once at startup,
 reuses them across requests. Avoids the ~60-90s per-request cost of spawning
 fresh python processes and reloading checkpoints from disk.
 
-Extract (bpy mesh extraction) and merge (bpy mesh merging) still run via
-subprocess since bpy has global state that conflicts with long-lived processes.
+Mesh extraction (bpy) still runs via subprocess since bpy has global state
+that conflicts with long-lived processes. Rig output is JSON only (no FBX/merge).
 """
 
 import os
@@ -247,6 +247,82 @@ def _skeleton_to_json(
     }
 
 
+def _rig_to_json(
+    collected: dict,
+    skeleton_model: str,
+    original_vertices: "np.ndarray | None",
+    group_per_vertex: int = 4,
+) -> dict:
+    """Build a combined skeleton + skin-weights JSON payload from the data
+    captured by SkinWriter (collect_data mode).
+
+    No Blender / FBX is involved. Bones, vertices and weights are all derived
+    from the same skin batch so they share one coordinate space, then mapped
+    back into the original input model space (denormalized + Z-up -> Y-up) so
+    the client can nearest-neighbour transfer weights onto the full-res mesh.
+    """
+    names = list(collected["names"])
+    parents_raw = collected["parents"]  # list[int], -1 == root
+    joints = np.asarray(collected["joints"], dtype=np.float32)
+    tails = np.asarray(collected["tails"], dtype=np.float32)
+    vertices = np.asarray(collected["vertices"], dtype=np.float32)
+    skin = np.asarray(collected["skin"], dtype=np.float32)
+    J = joints.shape[0]
+    parents = [None if int(p) < 0 else int(p) for p in parents_raw]
+
+    if original_vertices is not None:
+        joints = _zup_to_yup(_denormalize_joints(joints, original_vertices))
+        tails = _zup_to_yup(_denormalize_joints(tails, original_vertices))
+        vertices = _zup_to_yup(_denormalize_joints(vertices, original_vertices))
+
+    bones = []
+    for i in range(J):
+        if parents[i] is None:
+            position = joints[i].tolist()
+        else:
+            position = (joints[i] - joints[parents[i]]).tolist()
+        bones.append({
+            "name": names[i],
+            "parent": names[parents[i]] if parents[i] is not None else None,
+            "position": position,
+            "rotation": [0.0, 0.0, 0.0, 1.0],
+            "scale": [1.0, 1.0, 1.0],
+            "tail": tails[i].tolist() if i < len(tails) else None,
+        })
+
+    # Sparse skin weights: keep the top-K influences per vertex and renormalize.
+    num_bones = skin.shape[1]
+    K = num_bones if group_per_vertex <= 0 else min(group_per_vertex, num_bones)
+    topk_idx = np.argsort(-skin, axis=1)[:, :K]
+    topk_w = np.take_along_axis(skin, topk_idx, axis=1)
+    sums = topk_w.sum(axis=1, keepdims=True)
+    sums[sums == 0] = 1.0
+    topk_w = topk_w / sums
+
+    N = int(vertices.shape[0])
+    return {
+        "name": "UniRig Rig",
+        "skeleton": {
+            "name": "UniRig Skeleton",
+            "bones": bones,
+            "meta": {"model": skeleton_model},
+        },
+        "skin": {
+            "vertexCount": N,
+            "boneNames": names,
+            "influencesPerVertex": int(K),
+            "boneIndices": topk_idx.astype(np.int32).tolist(),
+            "weights": topk_w.astype(np.float32).tolist(),
+            "vertices": vertices.astype(np.float32).tolist(),
+        },
+        "meta": {
+            "model": skeleton_model,
+            "coordinateSystem": "y-up",
+            "space": "original",
+        },
+    }
+
+
 def _run_shell(cmd: str, cwd: str = "/app", timeout: int = SHELL_TIMEOUT) -> None:
     print(f">>> [runtime] {cmd}")
     result = subprocess.run(
@@ -337,20 +413,6 @@ class UniRigRuntime:
 
     # ── Public API ──
 
-    def generate_skeleton(
-        self,
-        input_path: str,
-        output_path: str,
-        seed: int = 12345,
-        npz_dir: Union[str, None] = None,
-        skeleton_model: str = "articulation-xl",
-    ) -> str:
-        """Extract mesh + predict skeleton. Returns path to skeleton FBX.
-        skeleton_model: 'articulation-xl' (default, higher quality) or 'rignet' (faster, smaller)."""
-        self._ensure_skeleton_model(skeleton_model)
-        with self._lock:
-            return self._generate_skeleton(input_path, output_path, seed, npz_dir, skeleton_model)
-
     def generate_skeleton_data(
         self,
         input_path: str,
@@ -363,30 +425,26 @@ class UniRigRuntime:
         with self._lock:
             return self._generate_skeleton_data(input_path, seed, npz_dir, skeleton_model)
 
-    def generate_skin(
+    def generate_rig_data(
         self,
         input_path: str,
-        output_path: str,
         seed: int = 12345,
         npz_dir: Union[str, None] = None,
-    ) -> str:
-        """Extract mesh + predict skin weights. Returns path to skin FBX."""
-        with self._lock:
-            return self._generate_skin(input_path, output_path, seed, npz_dir)
+        skeleton_model: str = "articulation-xl",
+        group_per_vertex: int = 4,
+    ) -> dict:
+        """Full skeleton + skin pipeline returning JSON (no FBX/GLB, no merge).
 
-    def merge(self, source_path: str, target_path: str, output_path: str) -> str:
-        """Merge skeleton/skin FBX into the original mesh. Returns output path."""
+        Returns a dict with the predicted skeleton and per-vertex skin weights
+        (top-K influences) plus the corresponding vertex positions, all in the
+        original model space (Y-up). Avoids the headless-Blender armature build
+        entirely by passing the skeleton between stages via predict_skeleton.npz.
+        """
+        self._ensure_skeleton_model(skeleton_model)
         with self._lock:
-            _run_shell(
-                f"python -X faulthandler -m src.inference.merge"
-                f" --require_suffix=obj,fbx,FBX,dae,glb,gltf,vrm"
-                f" --num_runs=1 --id=0"
-                f" --source={source_path}"
-                f" --target={target_path}"
-                f" --output={output_path}",
-                cwd=self._app_dir,
+            return self._generate_rig_data(
+                input_path, seed, npz_dir, skeleton_model, group_per_vertex
             )
-            return output_path
 
     # ── Internal ──
 
@@ -405,78 +463,6 @@ class UniRigRuntime:
             f" --output_dir={npz_dir}",
             cwd=self._app_dir,
         )
-
-    def _generate_skeleton(
-        self,
-        input_path: str,
-        output_path: str,
-        seed: int,
-        npz_dir: Union[str, None],
-        skeleton_model: str = "articulation-xl",
-    ) -> str:
-        if skeleton_model not in self._skel_pipelines:
-            raise ValueError(
-                f"Unknown skeleton_model: {skeleton_model}. "
-                f"Use one of: {list(self._skel_pipelines.keys())}"
-            )
-        pipeline = self._skel_pipelines[skeleton_model]
-
-        if npz_dir is None:
-            npz_dir = os.path.join(os.path.dirname(input_path), "npz")
-
-        L.seed_everything(seed, workers=True)
-
-        print(f">>> [runtime] Extracting mesh from {input_path} to {npz_dir}")
-        # Step 1: extract mesh via bpy subprocess
-        self._run_extract(input_path, npz_dir)
-
-        # Step 2: build dataset from extracted npz
-        files = get_files(
-            data_name=pipeline["data_name"],
-            inputs=input_path,
-            input_dataset_dir=None,
-            output_dataset_dir=npz_dir,
-            force_override=True,
-            warning=False,
-        )
-        files = [f[1] for f in files]
-        datapath = Datapath(files=files)
-
-        data = UniRigDatasetModule(
-            process_fn=pipeline["process_fn"],
-            predict_dataset_config=pipeline["predict_dataset_config"],
-            predict_transform_config=pipeline["predict_transform_config"],
-            tokenizer_config=pipeline["tokenizer_config"],
-            debug=False,
-            data_name=pipeline["data_name"],
-            datapath=datapath,
-        )
-
-        # Step 3: create writer callback targeting the output path
-        writer_cfg = dict(pipeline["writer_config"])
-        writer_cfg["npz_dir"] = npz_dir
-        writer_cfg["output_dir"] = None
-        writer_cfg["output_name"] = output_path
-        writer_cfg["user_mode"] = True
-        writer = get_writer(
-            **writer_cfg,
-            order_config=pipeline["predict_transform_config"].order_config,
-        )
-
-        # Step 4: run prediction with the pre-loaded system
-        trainer_config = dict(pipeline["task"].get("trainer", {}))
-        trainer = L.Trainer(
-            callbacks=[writer],
-            logger=False,
-            **trainer_config,
-        )
-        trainer.predict(pipeline["system"], datamodule=data, return_predictions=False)
-
-        # Step 5: free GPU memory for the next stage
-        pipeline["system"].cpu()
-        torch.cuda.empty_cache()
-
-        return output_path
 
     def _generate_skeleton_data(
         self,
@@ -526,7 +512,6 @@ class UniRigRuntime:
         writer_cfg["output_dir"] = None
         writer_cfg["output_name"] = None
         writer_cfg["user_mode"] = True
-        writer_cfg["export_fbx"] = None
         writer = get_writer(
             **writer_cfg,
             order_config=pipeline["predict_transform_config"].order_config,
@@ -573,20 +558,40 @@ class UniRigRuntime:
 
         return _skeleton_to_json(detokenize_output, skeleton_model, original_vertices)
 
-    def _generate_skin(
-        self, input_path: str, output_path: str, seed: int, npz_dir: Union[str, None]
-    ) -> str:
+    def _generate_rig_data(
+        self,
+        input_path: str,
+        seed: int,
+        npz_dir: Union[str, None],
+        skeleton_model: str = "articulation-xl",
+        group_per_vertex: int = 4,
+    ) -> dict:
+        """FBX-free skeleton + skin pipeline that returns JSON.
+
+        Stage 1 predicts the skeleton and writes predict_skeleton.npz (pure
+        NumPy via raw_data.save, no Blender). Stage 2 predicts skin weights from
+        that npz and captures them in memory (SkinWriter collect_data) instead
+        of exporting an FBX. The skeleton, vertices and weights are then
+        serialized together.
+        """
+        if skeleton_model not in self._skel_pipelines:
+            raise ValueError(
+                f"Unknown skeleton_model: {skeleton_model}. "
+                f"Use one of: {list(self._skel_pipelines.keys())}"
+            )
+        pipeline = self._skel_pipelines[skeleton_model]
+
         if npz_dir is None:
             npz_dir = os.path.join(os.path.dirname(input_path), "npz")
 
         L.seed_everything(seed, workers=True)
 
-        # Step 1: extract mesh via bpy subprocess
+        # ── Stage 1: extract mesh + predict skeleton → predict_skeleton.npz ──
+        print(f">>> [runtime] Extracting mesh from {input_path} to {npz_dir}")
         self._run_extract(input_path, npz_dir)
 
-        # Step 2: build dataset from extracted npz
         files = get_files(
-            data_name=self._skin_data_name,
+            data_name=pipeline["data_name"],
             inputs=input_path,
             input_dataset_dir=None,
             output_dataset_dir=npz_dir,
@@ -597,36 +602,95 @@ class UniRigRuntime:
         datapath = Datapath(files=files)
 
         data = UniRigDatasetModule(
+            process_fn=pipeline["process_fn"],
+            predict_dataset_config=pipeline["predict_dataset_config"],
+            predict_transform_config=pipeline["predict_transform_config"],
+            tokenizer_config=pipeline["tokenizer_config"],
+            debug=False,
+            data_name=pipeline["data_name"],
+            datapath=datapath,
+        )
+
+        # user_mode=False so the writer saves predict_skeleton.npz.
+        writer_cfg = dict(pipeline["writer_config"])
+        writer_cfg["npz_dir"] = npz_dir
+        writer_cfg["output_dir"] = None
+        writer_cfg["output_name"] = None
+        writer_cfg["user_mode"] = False
+        writer_cfg["export_npz"] = "predict_skeleton"
+        writer = get_writer(
+            **writer_cfg,
+            order_config=pipeline["predict_transform_config"].order_config,
+        )
+
+        trainer = L.Trainer(
+            callbacks=[writer],
+            logger=False,
+            **dict(pipeline["task"].get("trainer", {})),
+        )
+        trainer.predict(pipeline["system"], datamodule=data, return_predictions=False)
+
+        pipeline["system"].cpu()
+        torch.cuda.empty_cache()
+
+        # ── Stage 2: predict skin from predict_skeleton.npz, capture in memory ──
+        skin_files = get_files(
+            data_name=self._skin_data_name,
+            inputs=input_path,
+            input_dataset_dir=None,
+            output_dataset_dir=npz_dir,
+            force_override=True,
+            warning=False,
+        )
+        skin_files = [f[1] for f in skin_files]
+        skin_datapath = Datapath(files=skin_files)
+
+        skin_data = UniRigDatasetModule(
             process_fn=self._skin_process_fn,
             predict_dataset_config=self._skin_predict_dataset_config,
             predict_transform_config=self._skin_predict_transform_config,
             debug=False,
             data_name=self._skin_data_name,
-            datapath=datapath,
+            datapath=skin_datapath,
         )
 
-        # Step 3: create writer callback targeting the output path
-        writer_cfg = dict(self._skin_writer_config)
-        writer_cfg["npz_dir"] = npz_dir
-        writer_cfg["output_dir"] = None
-        writer_cfg["output_name"] = output_path
-        writer_cfg["user_mode"] = True
-        writer = get_writer(
-            **writer_cfg,
+        skin_writer_cfg = dict(self._skin_writer_config)
+        skin_writer_cfg["npz_dir"] = npz_dir
+        skin_writer_cfg["output_dir"] = None
+        skin_writer_cfg["output_name"] = None
+        skin_writer_cfg["user_mode"] = True
+        skin_writer_cfg["export_npz"] = None
+        skin_writer_cfg["collect_data"] = True
+        skin_writer = get_writer(
+            **skin_writer_cfg,
             order_config=self._skin_predict_transform_config.order_config,
         )
 
-        # Step 4: run prediction with the pre-loaded system
-        trainer_config = dict(self._skin_task.get("trainer", {}))
-        trainer = L.Trainer(
-            callbacks=[writer],
+        skin_trainer = L.Trainer(
+            callbacks=[skin_writer],
             logger=False,
-            **trainer_config,
+            **dict(self._skin_task.get("trainer", {})),
         )
-        trainer.predict(self._skin_system, datamodule=data, return_predictions=False)
+        skin_trainer.predict(
+            self._skin_system, datamodule=skin_data, return_predictions=False
+        )
 
-        # Step 5: free GPU memory for the next stage
         self._skin_system.cpu()
         torch.cuda.empty_cache()
 
-        return output_path
+        if not skin_writer.collected:
+            raise RuntimeError("Skin prediction produced no data to serialize")
+        collected = skin_writer.collected[0]
+
+        # Original (pre-normalization) vertices so the rig maps back into the
+        # input model's coordinate space, matching the /skeleton JSON output.
+        original_vertices = None
+        raw_npz_path = os.path.join(files[0], "raw_data.npz")
+        if os.path.isfile(raw_npz_path):
+            raw = np.load(raw_npz_path, allow_pickle=True)
+            if "vertices" in raw:
+                original_vertices = np.asarray(raw["vertices"], dtype=np.float32)
+
+        return _rig_to_json(
+            collected, skeleton_model, original_vertices, group_per_vertex
+        )

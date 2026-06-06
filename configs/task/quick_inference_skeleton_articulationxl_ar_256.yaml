@@ -17,9 +17,6 @@ writer:
   add_num: False
   repeat: 1
   export_npz: predict_skeleton
-  export_obj: skeleton
-  export_fbx: skeleton
-  # export_pc: pc
 
 trainer:
   max_epochs: 1

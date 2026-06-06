@@ -190,7 +190,11 @@ class SkinWriter(BasePredictionWriter):
         self.save_name          = save_name
         self.add_num            = kwargs.get('add_num', False)
         self.export_npz         = kwargs.get('export_npz', True)
-        self.export_fbx         = kwargs.get('export_fbx', False)
+        # When True, captures the resampled per-vertex skin weights + skeleton
+        # arrays in memory (self.collected) instead of requiring an FBX export.
+        # Used by the JSON rig path to avoid headless-Blender armature building.
+        self.collect_data       = kwargs.get('collect_data', False)
+        self.collected: List[dict] = []
         if order_config is not None:
             self.order = get_order(config=order_config)
         else:
@@ -273,38 +277,26 @@ class SkinWriter(BasePredictionWriter):
                     path = os.path.join(path, f"{save_name}.{suffix}")
                 return path
             
+            if self.collect_data:
+                try:
+                    names = RawData.load(path=os.path.join(paths[id], data_names[id])).names
+                except Exception:
+                    names = None
+                if names is None:
+                    names = [f"bone_{i}" for i in range(J)]
+                self.collected.append({
+                    'names': [str(n) for n in names],
+                    'parents': [(-1 if p is None else int(p)) for p in parents],
+                    'joints': np.asarray(joints[id, :J], dtype=np.float32),
+                    'tails': np.asarray(tails[id, :J], dtype=np.float32),
+                    'vertices': np.asarray(o_vertices, dtype=np.float32),
+                    'faces': np.asarray(faces[id, :F], dtype=np.int64),
+                    'skin': np.asarray(skin_resampled, dtype=np.float32),
+                })
+
             raw_data = RawSkin(skin=skin_pred, vertices=sampled_vertices[id], joints=joints[id, :J])
             if self.export_npz is not None:
                 raw_data.save(path=make_path(self.export_npz, 'npz'))
-            if self.export_fbx is not None:
-                try:
-                    exporter = Exporter()
-                    names = RawData.load(path=os.path.join(paths[id], data_names[id])).names
-                    if names is None:
-                        names = [f"bone_{i}" for i in range(J)]
-                    if self.user_mode:
-                        if self.output_name is not None:
-                            path = self.output_name
-                        else:
-                            path = make_path(self.save_name, 'fbx', trim=True)
-                    else:
-                        path = make_path(self.export_fbx, 'fbx')
-                    exporter._export_fbx(
-                        path=path,
-                        vertices=o_vertices,
-                        joints=joints[id, :J],
-                        skin=skin_resampled,
-                        parents=parents,
-                        names=names,
-                        faces=faces[id, :F],
-                        group_per_vertex=4,
-                        tails=tails[id, :J],
-                        use_extrude_bone=False,
-                        use_connect_unique_child=False,
-                        # do_not_normalize=True,
-                    )
-                except Exception as e:
-                    print(str(e))
     
     def write_on_epoch_end(self, trainer, pl_module, predictions, batch_indices):
         self._epoch += 1

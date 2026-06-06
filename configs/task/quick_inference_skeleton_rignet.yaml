@@ -6,7 +6,7 @@ resume_from_checkpoint: experiments/skeleton/rignet/model.ckpt
 components:
   data: quick_inference
   tokenizer: tokenizer_rignet
-  transform: train_rignet_ar_transform
+  transform: inference_ar_transform
   model: unirig_rignet
   system: ar_inference_rignet
   data_name: raw_data.npz
@@ -17,8 +17,6 @@ writer:
   add_num: False
   repeat: 1
   export_npz: predict_skeleton
-  export_obj: skeleton
-  export_fbx: skeleton
 
 trainer:
   max_epochs: 1

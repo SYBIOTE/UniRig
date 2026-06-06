@@ -8,7 +8,6 @@ from numpy import ndarray
 from typing import Union, List, Tuple
 from dataclasses import dataclass
 
-from ..data.exporter import Exporter
 from ..data.order import OrderConfig, Order, get_order
 
 @dataclass(frozen=True)
@@ -70,7 +69,7 @@ class TokenizeInput():
         return self.bones.shape[0]
 
 @dataclass
-class DetokenizeOutput(Exporter):
+class DetokenizeOutput:
     # original tokens
     tokens: ndarray
 

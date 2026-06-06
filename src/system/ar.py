@@ -192,8 +192,6 @@ class ARSystem(L.LightningModule):
                     path=None,
                     cls=None,
                 )
-                raw_data.export_fbx(path=path+".fbx")
-    
     def on_validation_epoch_end(self):
         # calculate per class validation loss
         val_loss_j2j = 0.
@@ -262,9 +260,6 @@ class ARWriter(BasePredictionWriter):
         self.repeat             = kwargs.get('repeat', 1)
         self.add_num            = kwargs.get('add_num', False)
         self.export_npz         = kwargs.get('export_npz', None)
-        self.export_obj         = kwargs.get('export_obj', None)
-        self.export_fbx         = kwargs.get('export_fbx', None)
-        self.export_pc          = kwargs.get('export_pc', None)
         if order_config is not None:
             self.order = get_order(config=order_config)
         else:
@@ -343,15 +338,3 @@ class ARWriter(BasePredictionWriter):
             if not self.user_mode and self.export_npz is not None:
                 print(make_path(self.export_npz, 'npz'))
                 raw_data.save(path=make_path(self.export_npz, 'npz'))
-            if not self.user_mode and self.export_obj is not None:
-                raw_data.export_skeleton(path=make_path(self.export_obj, 'obj'))
-            if not self.user_mode and self.export_pc is not None:
-                raw_data.export_pc(path=make_path(self.export_pc, 'obj'))
-            if self.export_fbx is not None:
-                if not self.user_mode:
-                    raw_data.export_fbx(path=make_path(self.export_fbx, 'fbx'))
-                else:
-                    if self.output_name is not None:
-                        raw_data.export_fbx(path=self.output_name)
-                    else:
-                        raw_data.export_fbx(path=make_path(self.export_fbx, 'fbx', trim=True))

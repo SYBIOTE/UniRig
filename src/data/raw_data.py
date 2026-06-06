@@ -141,49 +141,6 @@ class RawData(Exporter):
         '''
         self._export_skeleton_sequence(joints=self.joints, parents=self.parents, path=path)
     
-    def export_fbx(
-        self,
-        path: str,
-        extrude_size: float=0.03,
-        group_per_vertex: int=-1,
-        add_root: bool=False,
-        do_not_normalize: bool=False,
-        use_extrude_bone: bool=True,
-        use_connect_unique_child: bool=True,
-        extrude_from_parent: bool=True,
-        use_tail: bool=False,
-        custom_vertex_group: Union[ndarray, None]=None,
-    ):
-        '''
-        export the whole model with skining
-        '''
-        self._export_fbx(
-            path=path,
-            vertices=self.vertices,
-            joints=self.joints,
-            skin=self.skin if custom_vertex_group is None else custom_vertex_group,
-            parents=self.parents,
-            names=self.names,
-            faces=self.faces,
-            extrude_size=extrude_size,
-            group_per_vertex=group_per_vertex,
-            add_root=add_root,
-            do_not_normalize=do_not_normalize,
-            use_extrude_bone=use_extrude_bone,
-            use_connect_unique_child=use_connect_unique_child,
-            extrude_from_parent=extrude_from_parent,
-            tails=self.tails if use_tail else None,
-        )
-    
-    def export_render(self, path: str, resolution: Tuple[int, int]=[256, 256]):
-        self._export_render(
-            path=path,
-            vertices=self.vertices,
-            faces=self.faces,
-            bones=np.concatenate([self.joints, self.tails], axis=-1),
-            resolution=resolution,
-        )
-
 @dataclass(frozen=True)
 class RawSkeleton(Exporter):
     '''
@@ -254,50 +211,8 @@ class RawSkeleton(Exporter):
         '''
         self._export_skeleton_sequence(joints=self.joints, parents=self.parents, path=path)
     
-    def export_fbx(
-        self,
-        path: str,
-        extrude_size: float=0.03,
-        group_per_vertex: int=-1,
-        add_root: bool=False,
-        do_not_normalize: bool=False,
-        use_extrude_bone: bool=True,
-        use_connect_unique_child: bool=True,
-        extrude_from_parent: bool=True,
-        use_tail: bool=False,
-    ):
-        '''
-        export the whole model with skining
-        '''
-        self._export_fbx(
-            path=path,
-            vertices=None,
-            joints=self.joints,
-            skin=None,
-            parents=self.parents,
-            names=self.names,
-            faces=None,
-            extrude_size=extrude_size,
-            group_per_vertex=group_per_vertex,
-            add_root=add_root,
-            do_not_normalize=do_not_normalize,
-            use_extrude_bone=use_extrude_bone,
-            use_connect_unique_child=use_connect_unique_child,
-            extrude_from_parent=extrude_from_parent,
-            tails=self.tails if use_tail else None,
-        )
-    
-    def export_render(self, path: str, resolution: Tuple[int, int]=[256, 256]):
-        self._export_render(
-            path=path,
-            vertices=None,
-            faces=None,
-            bones=np.concatenate([self.joints, self.tails], axis=-1),
-            resolution=resolution,
-        )
-
 @dataclass
-class RawSkin(Exporter):
+class RawSkin:
     '''
     Dataclass to handle skeleton from AR.
     '''
