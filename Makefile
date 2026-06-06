@@ -9,7 +9,6 @@ ckpts:
 	@test -n "$${HF_TOKEN}" || (echo "Set HF_TOKEN (e.g. export HF_TOKEN=your_token)"; exit 1)
 	HF_TOKEN=$${HF_TOKEN} hf download VAST-AI/UniRig \
 		--include "skeleton/articulation-xl_quantization_256/model.ckpt" \
-		--include "skeleton/rignet/model.ckpt" \
 		--include "skin/articulation-xl/model.ckpt" \
 		--local-dir ckpts
 	@echo ">>> Done. Verify: ls ckpts/skeleton ckpts/skin"

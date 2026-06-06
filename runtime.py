@@ -61,7 +61,7 @@ from src.model.parse import get_model
 from src.system.parse import get_system, get_writer
 
 SKELETON_TASK_ARTICULATION_XL = "configs/task/quick_inference_skeleton_articulationxl_ar_256.yaml"
-SKELETON_TASK_RIGNET = "configs/task/quick_inference_skeleton_rignet.yaml"
+SKELETON_MODEL = "articulation-xl"
 SKIN_TASK = "configs/task/quick_inference_unirig_skin.yaml"
 SHELL_TIMEOUT = 300
 
@@ -348,29 +348,18 @@ class UniRigRuntime:
     def __init__(self, app_dir: str = "/app", compile_models: bool = False):
         self._app_dir = app_dir
         self._lock = threading.Lock()
-        self._model_init_lock = threading.Lock()
-        self._preload_rignet = os.environ.get("UNIRIG_PRELOAD_RIGNET", "0") == "1"
 
         _preflight()
         print(">>> [runtime] Preflight OK — loading checkpoints from volume into memory...")
         torch.set_float32_matmul_precision("high")
 
         t0 = time.perf_counter()
-        self._skel_pipelines = {
-            "articulation-xl": _load_skeleton_pipeline(app_dir, SKELETON_TASK_ARTICULATION_XL),
-        }
+        self._skel_pipeline = _load_skeleton_pipeline(app_dir, SKELETON_TASK_ARTICULATION_XL)
         print(f">>> [runtime] articulation-xl ready ({time.perf_counter() - t0:.1f}s elapsed)")
 
         t1 = time.perf_counter()
         skin_result = _load_skin_pipeline(app_dir)
         print(f">>> [runtime] skin ready ({time.perf_counter() - t1:.1f}s elapsed)")
-
-        if self._preload_rignet:
-            t2 = time.perf_counter()
-            self._skel_pipelines["rignet"] = _load_skeleton_pipeline(app_dir, SKELETON_TASK_RIGNET)
-            print(f">>> [runtime] rignet ready ({time.perf_counter() - t2:.1f}s elapsed)")
-        else:
-            print(">>> [runtime] rignet deferred (loads on first /rig/fast or /skeleton/fast request)")
 
         self._skin_predict_transform_config = skin_result["predict_transform_config"]
         self._skin_predict_dataset_config = skin_result["predict_dataset_config"]
@@ -383,8 +372,9 @@ class UniRigRuntime:
         # Optionally compile models for faster inference after warmup
         if compile_models:
             try:
-                for name, pipeline in self._skel_pipelines.items():
-                    pipeline["system"].model = torch.compile(pipeline["system"].model, mode="reduce-overhead")
+                self._skel_pipeline["system"].model = torch.compile(
+                    self._skel_pipeline["system"].model, mode="reduce-overhead"
+                )
                 self._skin_system.model = torch.compile(self._skin_system.model, mode="reduce-overhead")
                 print(">>> [runtime] torch.compile applied to all models")
             except Exception as e:
@@ -393,24 +383,6 @@ class UniRigRuntime:
         self._ready = True
         print(f">>> [runtime] UniRigRuntime initialized ({time.perf_counter() - t0:.1f}s total)")
 
-    def _ensure_skeleton_model(self, skeleton_model: str) -> None:
-        if skeleton_model in self._skel_pipelines:
-            return
-        if skeleton_model != "rignet":
-            raise ValueError(
-                f"Unknown skeleton_model: {skeleton_model}. "
-                f"Use one of: articulation-xl, rignet"
-            )
-        with self._model_init_lock:
-            if skeleton_model in self._skel_pipelines:
-                return
-            print(">>> [runtime] Lazy-loading rignet...")
-            t0 = time.perf_counter()
-            self._skel_pipelines["rignet"] = _load_skeleton_pipeline(
-                self._app_dir, SKELETON_TASK_RIGNET
-            )
-            print(f">>> [runtime] rignet ready ({time.perf_counter() - t0:.1f}s elapsed)")
-
     # ── Public API ──
 
     def generate_skeleton_data(
@@ -418,19 +390,16 @@ class UniRigRuntime:
         input_path: str,
         seed: int = 12345,
         npz_dir: Union[str, None] = None,
-        skeleton_model: str = "articulation-xl",
     ) -> dict:
         """Extract mesh + predict skeleton. Returns structured skeleton data as a dict (no FBX)."""
-        self._ensure_skeleton_model(skeleton_model)
         with self._lock:
-            return self._generate_skeleton_data(input_path, seed, npz_dir, skeleton_model)
+            return self._generate_skeleton_data(input_path, seed, npz_dir)
 
     def generate_rig_data(
         self,
         input_path: str,
         seed: int = 12345,
         npz_dir: Union[str, None] = None,
-        skeleton_model: str = "articulation-xl",
         group_per_vertex: int = 4,
     ) -> dict:
         """Full skeleton + skin pipeline returning JSON (no FBX/GLB, no merge).
@@ -440,11 +409,8 @@ class UniRigRuntime:
         original model space (Y-up). Avoids the headless-Blender armature build
         entirely by passing the skeleton between stages via predict_skeleton.npz.
         """
-        self._ensure_skeleton_model(skeleton_model)
         with self._lock:
-            return self._generate_rig_data(
-                input_path, seed, npz_dir, skeleton_model, group_per_vertex
-            )
+            return self._generate_rig_data(input_path, seed, npz_dir, group_per_vertex)
 
     # ── Internal ──
 
@@ -469,15 +435,9 @@ class UniRigRuntime:
         input_path: str,
         seed: int,
         npz_dir: Union[str, None],
-        skeleton_model: str = "articulation-xl",
     ) -> dict:
         """Run skeleton inference and return structured data (no FBX export)."""
-        if skeleton_model not in self._skel_pipelines:
-            raise ValueError(
-                f"Unknown skeleton_model: {skeleton_model}. "
-                f"Use one of: {list(self._skel_pipelines.keys())}"
-            )
-        pipeline = self._skel_pipelines[skeleton_model]
+        pipeline = self._skel_pipeline
 
         if npz_dir is None:
             npz_dir = os.path.join(os.path.dirname(input_path), "npz")
@@ -556,14 +516,13 @@ class UniRigRuntime:
             if "vertices" in raw:
                 original_vertices = np.asarray(raw["vertices"], dtype=np.float32)
 
-        return _skeleton_to_json(detokenize_output, skeleton_model, original_vertices)
+        return _skeleton_to_json(detokenize_output, SKELETON_MODEL, original_vertices)
 
     def _generate_rig_data(
         self,
         input_path: str,
         seed: int,
         npz_dir: Union[str, None],
-        skeleton_model: str = "articulation-xl",
         group_per_vertex: int = 4,
     ) -> dict:
         """FBX-free skeleton + skin pipeline that returns JSON.
@@ -574,12 +533,7 @@ class UniRigRuntime:
         of exporting an FBX. The skeleton, vertices and weights are then
         serialized together.
         """
-        if skeleton_model not in self._skel_pipelines:
-            raise ValueError(
-                f"Unknown skeleton_model: {skeleton_model}. "
-                f"Use one of: {list(self._skel_pipelines.keys())}"
-            )
-        pipeline = self._skel_pipelines[skeleton_model]
+        pipeline = self._skel_pipeline
 
         if npz_dir is None:
             npz_dir = os.path.join(os.path.dirname(input_path), "npz")
@@ -692,5 +646,5 @@ class UniRigRuntime:
                 original_vertices = np.asarray(raw["vertices"], dtype=np.float32)
 
         return _rig_to_json(
-            collected, skeleton_model, original_vertices, group_per_vertex
+            collected, SKELETON_MODEL, original_vertices, group_per_vertex
         )

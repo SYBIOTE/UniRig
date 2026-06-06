@@ -12,7 +12,6 @@ import sys
 
 REQUIRED = [
     "experiments/skeleton/articulation-xl_quantization_256/model.ckpt",
-    "experiments/skeleton/rignet/model.ckpt",
     "experiments/skin/articulation-xl/model.ckpt",
 ]
 

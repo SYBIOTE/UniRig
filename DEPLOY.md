@@ -25,9 +25,7 @@ docker run --gpus all -p 8080:8080 \
 |----------|-------------|
 | `GET /ping`, `/health` | Liveness |
 | `POST /rig` | Full pipeline JSON — skeleton + skin weights (articulation-xl) |
-| `POST /rig/fast` | Full pipeline JSON (rignet, faster) |
 | `POST /skeleton` | Skeleton JSON only (articulation-xl) |
-| `POST /skeleton/fast` | Skeleton JSON only (rignet) |
 
 ```bash
 curl -X POST -F "file=@mesh.glb" http://localhost:8080/rig
@@ -39,5 +37,4 @@ curl -X POST -F "file=@mesh.glb" http://localhost:8080/rig
 |-----|---------|-------------|
 | `UNIRIG_APP_DIR` | `/app` | App root |
 | `UNIRIG_COMPILE` | `0` | `1` = torch.compile (slower cold start) |
-| `UNIRIG_PRELOAD_RIGNET` | `0` | `1` = load rignet at startup |
 | `SKIP_CHECKPOINT_PREP` | `0` | `1` = skip entrypoint verify |

@@ -11,13 +11,12 @@ Deploy UniRig on **[RunPod](https://www.runpod.io/)** Serverless with a **networ
 | `docker-entrypoint.sh` | Symlink volume → `/app/experiments`, verify checkpoints |
 | `scripts/ensure_checkpoints.py` | Fail fast if weights are missing |
 
-## Checkpoints (~6 GB)
+## Checkpoints (~5.5 GB)
 
-Three files under `experiments/` (local `ckpts/` mirrors this):
+Two files under `experiments/` (local `ckpts/` mirrors this):
 
 ```
 skeleton/articulation-xl_quantization_256/model.ckpt   (~1.4 GB)
-skeleton/rignet/model.ckpt                             (~593 MB)
 skin/articulation-xl/model.ckpt                        (~4.1 GB)
 ```
 
@@ -49,16 +48,12 @@ aws s3 cp ckpts/skeleton/articulation-xl_quantization_256/model.ckpt \
   s3://YOUR_VOLUME_ID/unirig/skeleton/articulation-xl_quantization_256/model.ckpt \
   --region eu-ro-1 --endpoint-url https://s3api-eu-ro-1.runpod.io/
 
-aws s3 cp ckpts/skeleton/rignet/model.ckpt \
-  s3://YOUR_VOLUME_ID/unirig/skeleton/rignet/model.ckpt \
-  --region eu-ro-1 --endpoint-url https://s3api-eu-ro-1.runpod.io/
-
 aws s3 cp ckpts/skin/articulation-xl/model.ckpt \
   s3://YOUR_VOLUME_ID/unirig/skin/articulation-xl/model.ckpt \
   --region eu-ro-1 --endpoint-url https://s3api-eu-ro-1.runpod.io/
 ```
 
-Verify the three `.ckpt` files exist under `unirig/skeleton/` and `unirig/skin/`.
+Verify both `.ckpt` files exist under `unirig/skeleton/` and `unirig/skin/`.
 
 ## Build & push
 
@@ -101,7 +96,6 @@ RunPod is pulling `docker.io/library/unirig-base:latest` (no Docker Hub user). F
 | `UNIRIG_APP_DIR` | `/app` | App root |
 | `UNIRIG_CKPTS_ROOT` | `/runpod-volume/unirig` | Optional; auto-detected if dir exists |
 | `UNIRIG_COMPILE` | `0` | Set `1` only after measuring cold-start impact |
-| `UNIRIG_PRELOAD_RIGNET` | `0` | Set `1` to load rignet at startup (adds ~1 min; studio uses articulation-xl) |
 | `NVIDIA_DRIVER_CAPABILITIES` | `graphics,compute,utility` | Required for Blender headless |
 | `PORT` | `8080` | HTTP server port (RunPod default is `80`; set `8080` and **Expose HTTP Ports** `8080`) |
 | `PORT_HEALTH` | `8080` | Health probe port — same as `PORT` unless you run a separate listener |
@@ -126,13 +120,9 @@ Startup sequence:
 1. Symlink `/runpod-volume/unirig` → `/app/experiments` (no copy)
 2. HTTP server listens immediately; `/ping` returns **204**
 3. Load **articulation-xl** (~1.4 GB) then **skin** (~4.1 GB) sequentially from the volume
-4. **rignet** (~593 MB) is **not** loaded until the first `/rig/fast` or `/skeleton/fast` request
-5. `/ping` returns **200** when articulation-xl + skin are ready (~2–4 min typical)
+4. `/ping` returns **200** when both are ready (~2–4 min typical)
 
-Do **not** set:
-
-- `UNIRIG_COMPILE=1` — adds minutes to startup
-- `UNIRIG_PRELOAD_RIGNET=1` — unless you mostly use `/skeleton/fast`
+Do **not** set `UNIRIG_COMPILE=1` unless you have measured the cold-start impact.
 
 Check worker logs for timing:
 
@@ -140,7 +130,6 @@ Check worker logs for timing:
 >>> [runtime] Loaded checkpoint in …s: …/articulation-xl…/model.ckpt
 >>> [runtime] articulation-xl ready (…s elapsed)
 >>> [runtime] skin ready (…s elapsed)
->>> [runtime] rignet deferred …
 >>> [api] Background model load finished — /ping will return 200
 ```
 

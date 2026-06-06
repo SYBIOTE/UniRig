@@ -1,10 +1,9 @@
 """
 UniRig microservice: auto-rig 3D meshes via file upload.
-Exposes POST /rig, POST /rig/fast, POST /skeleton, POST /skeleton/fast (JSON only),
-GET /health, and GET /ping (RunPod liveness).
+Exposes POST /rig, POST /skeleton (JSON only), GET /health, and GET /ping (RunPod liveness).
 
 Models load in a background thread: HTTP listens immediately (/ping 204),
-then articulation-xl + skin load from the volume; rignet loads on first fast request.
+then articulation-xl skeleton + skin load from the volume.
 
 Usage:
     python -m uvicorn api:app --host 0.0.0.0 --port 8080
@@ -104,25 +103,16 @@ def health():
     return _probe_response()
 
 
-@app.post("/rig/fast")
-async def rig_mesh_fast(
-    file: UploadFile = File(...),
-    seed: int = Form(DEFAULT_SEED),
-):
-    """Full pipeline with rignet (faster). Returns skeleton + skin weights as JSON."""
-    return await _rig_mesh_impl(file, seed, skeleton_model="rignet")
-
-
 @app.post("/rig")
 async def rig_mesh(
     file: UploadFile = File(...),
     seed: int = Form(DEFAULT_SEED),
 ):
-    """Full pipeline with articulation-xl (higher quality). Returns skeleton + skin weights as JSON."""
-    return await _rig_mesh_impl(file, seed, skeleton_model="articulation-xl")
+    """Full pipeline (articulation-xl). Returns skeleton + skin weights as JSON."""
+    return await _rig_mesh_impl(file, seed)
 
 
-async def _rig_mesh_impl(file: UploadFile, seed: int, skeleton_model: str):
+async def _rig_mesh_impl(file: UploadFile, seed: int):
     runtime = _get_runtime()
     filename = file.filename or "mesh.glb"
     ext = _validate_extension(filename)
@@ -135,7 +125,6 @@ async def _rig_mesh_impl(file: UploadFile, seed: int, skeleton_model: str):
             input_path,
             seed=seed,
             npz_dir=os.path.join(tmpdir, "npz"),
-            skeleton_model=skeleton_model,
         )
         return JSONResponse(content=data)
     except HTTPException:
@@ -146,25 +135,16 @@ async def _rig_mesh_impl(file: UploadFile, seed: int, skeleton_model: str):
         _cleanup_dir(tmpdir)
 
 
-@app.post("/skeleton/fast")
-async def generate_skeleton_fast(
-    file: UploadFile = File(...),
-    seed: int = Form(DEFAULT_SEED),
-):
-    """Skeleton only with rignet (faster). Returns skeleton as JSON."""
-    return await _generate_skeleton_impl(file, seed, skeleton_model="rignet")
-
-
 @app.post("/skeleton")
 async def generate_skeleton(
     file: UploadFile = File(...),
     seed: int = Form(DEFAULT_SEED),
 ):
-    """Skeleton only with articulation-xl (higher quality). Returns skeleton as JSON."""
-    return await _generate_skeleton_impl(file, seed, skeleton_model="articulation-xl")
+    """Skeleton only (articulation-xl). Returns skeleton as JSON."""
+    return await _generate_skeleton_impl(file, seed)
 
 
-async def _generate_skeleton_impl(file: UploadFile, seed: int, skeleton_model: str):
+async def _generate_skeleton_impl(file: UploadFile, seed: int):
     runtime = _get_runtime()
     filename = file.filename or "mesh.glb"
     ext = _validate_extension(filename)
@@ -173,9 +153,7 @@ async def _generate_skeleton_impl(file: UploadFile, seed: int, skeleton_model: s
     try:
         input_path = os.path.join(tmpdir, f"input.{ext}")
         _save_upload(file, input_path)
-        data = runtime.generate_skeleton_data(
-            input_path, seed=seed, npz_dir=None, skeleton_model=skeleton_model
-        )
+        data = runtime.generate_skeleton_data(input_path, seed=seed, npz_dir=None)
         return JSONResponse(content=data)
     except HTTPException:
         raise

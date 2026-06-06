@@ -4,13 +4,11 @@ from huggingface_hub import hf_hub_download
 
 HF_MAP = {
     'experiments/skeleton/articulation-xl_quantization_256/model.ckpt': 'skeleton/articulation-xl_quantization_256/model.ckpt',
-    'experiments/skeleton/rignet/model.ckpt': 'skeleton/rignet/model.ckpt',
     'experiments/skin/articulation-xl/model.ckpt': 'skin/articulation-xl/model.ckpt',
 }
 
 REQUIRED_FOR_API = [
     'experiments/skeleton/articulation-xl_quantization_256/model.ckpt',
-    'experiments/skeleton/rignet/model.ckpt',
     'experiments/skin/articulation-xl/model.ckpt',
 ]
 
